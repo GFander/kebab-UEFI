@@ -1,0 +1,234 @@
+From 25857953cf9678007a8bf35bc81b8a4f275bcce8 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 21:45:13 +0800
+Subject: [PATCH 17/38] kebab: XNU-001a-4 drop the event entirely; fix BlockIo
+ request validation
+
+XNU-001a-3 created the probe event with NotifyTpl=TPL_APPLICATION, which
+Mu_Basecore rejects: Event.c:436 returns EFI_INVALID_PARAMETER when
+NotifyTpl <= TPL_APPLICATION. The event was therefore never created and
+the callback never ran, so ConnectController/OpenVolume would not happen.
+
+- Remove the event, the callback and the one-shot flag. Everything now
+  runs in the driver entry point, which DXE dispatches at TPL_APPLICATION
+  (the entry TPL is read and printed as Proof).
+- ConnectController(mHandle, NULL, NULL, TRUE) still scoped to our own
+  controller; DiskIo/Partition/Fat are in APRIORI so their bindings exist
+  by the time a normal DXE driver runs.
+- ReadBlocks now validates MediaId, BufferSize, Lba<=LastBlock and
+  (Blocks-1) <= LastBlock-Lba BEFORE computing any byte offset, so a huge
+  LBA cannot wrap and alias into the image.
+---
+ .../Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c     | 133 ++++++++++--------
+ 1 file changed, 78 insertions(+), 55 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+index ac658bbf..6a9f8b1f 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+@@ -1,7 +1,13 @@
+ /** @file
+-  XNU-001a-2: minimal read-only BlockIo producer over an embedded FAT12
+-  image, plus a ReadyToBoot verification of SimpleFileSystem + file read.
+-  No HII, no ASL, no timers, no protocol notify, no UFS access.
++  XNU-001a-4: minimal read-only BlockIo producer over an embedded FAT12
++  image, plus an immediate (TPL_APPLICATION) connect + file verification.
++
++  No events, no timers, no protocol notify: everything happens in the driver
++  entry point, which DXE dispatches at TPL_APPLICATION.
++
++  (XNU-001a-3 tried CreateEventEx(EVT_NOTIFY_SIGNAL, TPL_APPLICATION, ...).
++   Mu_Basecore Event.c:436 rejects NotifyTpl <= TPL_APPLICATION with
++   EFI_INVALID_PARAMETER, so that event was never created.)
+ **/
+ #include <Uefi.h>
+ #include <Library/UefiBootServicesTableLib.h>
+@@ -15,20 +21,16 @@
+ #include <Protocol/BlockIo.h>
+ #include <Protocol/SimpleFileSystem.h>
+ #include <Guid/FileInfo.h>
+-#include <Guid/EventGroup.h>
+ 
+ #define XNU_FAT_GUID \
+   { 0x7B1C2A44, 0x5E3D, 0x4F6A, { 0x9C, 0x11, 0x8E, 0x2D, 0x4F, 0x6A, 0x1B, 0x23 }}
+-#define XNU_BLOCK_SIZE  512u
+ 
+ STATIC EFI_GUID  mXnuFatGuid = XNU_FAT_GUID;
+ STATIC VOID     *mFatImage   = NULL;
+ STATIC UINTN     mFatSize    = 0;
+-STATIC EFI_BLOCK_IO_MEDIA  mMedia;
++STATIC EFI_BLOCK_IO_MEDIA    mMedia;
+ STATIC EFI_BLOCK_IO_PROTOCOL mBlockIo;
+-STATIC EFI_HANDLE  mHandle   = NULL;
+-STATIC EFI_EVENT   mReadyToBoot = NULL;
+-STATIC BOOLEAN     mProbeDone   = FALSE;
++STATIC EFI_HANDLE            mHandle = NULL;
+ 
+ STATIC CONST CHAR8 mExpected[] =
+   "XNU-000 RAM FAT probe file.\n"
+@@ -50,12 +52,39 @@ STATIC EFI_STATUS EFIAPI BlkRead (
+   IN EFI_BLOCK_IO_PROTOCOL *T, IN UINT32 MediaId, IN EFI_LBA Lba,
+   IN UINTN BufferSize, OUT VOID *Buffer)
+ {
+-  UINTN Off;
+-  if (Buffer == NULL || BufferSize == 0) return EFI_INVALID_PARAMETER;
+-  if (BufferSize % XNU_BLOCK_SIZE != 0) return EFI_BAD_BUFFER_SIZE;
+-  Off = (UINTN)MultU64x32 (Lba, XNU_BLOCK_SIZE);
+-  if (Off + BufferSize > mFatSize || Off + BufferSize < Off) return EFI_INVALID_PARAMETER;
+-  CopyMem (Buffer, (UINT8 *)mFatImage + Off, BufferSize);
++  UINT64 Blocks;
++  UINT64 Offset;
++
++  if (MediaId != mMedia.MediaId) {
++    return EFI_MEDIA_CHANGED;
++  }
++  if (BufferSize == 0) {
++    return EFI_SUCCESS;               // nothing to transfer
++  }
++  if (Buffer == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++  if ((BufferSize % mMedia.BlockSize) != 0) {
++    return EFI_BAD_BUFFER_SIZE;
++  }
++  Blocks = (UINT64)(BufferSize / mMedia.BlockSize);
++
++  //
++  // Validate the whole request BEFORE computing any byte offset, so a huge
++  // LBA cannot wrap around and alias into the image.
++  //
++  if (Lba > mMedia.LastBlock) {
++    return EFI_INVALID_PARAMETER;
++  }
++  if ((Blocks - 1) > ((UINT64)mMedia.LastBlock - (UINT64)Lba)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Offset = MultU64x32 ((UINT64)Lba, mMedia.BlockSize);   // Lba is bounded now
++  if ((Offset + BufferSize) > (UINT64)mFatSize) {
++    return EFI_INVALID_PARAMETER;                        // defensive
++  }
++  CopyMem (Buffer, (UINT8 *)mFatImage + (UINTN)Offset, BufferSize);
+   return EFI_SUCCESS;
+ }
+ 
+@@ -97,46 +126,27 @@ STATIC EFI_STATUS ProbeVolume (IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs)
+   return EFI_SUCCESS;
+ }
+ 
+-STATIC VOID EFIAPI XnuReadyToBoot (IN EFI_EVENT E, IN VOID *C)
++STATIC BOOLEAN ProbeAllVolumes (VOID)
+ {
+   EFI_STATUS St;
+-  EFI_TPL    OldTpl;
+-
+   EFI_HANDLE *Handles = NULL;
+   UINTN Count = 0;
+   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs = NULL;
+   BOOLEAN Found = FALSE;
+ 
+-  // One-shot: ReadyToBoot may be signalled more than once.
+-  if (mProbeDone) {
+-    DEBUG ((EFI_D_ERROR, "[XNU-RAM] ReadyToBoot    = repeat (ignored)\n"));
+-    return;
+-  }
+-  mProbeDone = TRUE;
+-
+-  // Read the current TPL without changing it (RaiseTPL returns the old value).
+-  OldTpl = gBS->RaiseTPL (TPL_HIGH_LEVEL);
+-  gBS->RestoreTPL (OldTpl);
+-  DEBUG ((EFI_D_ERROR, "[XNU-RAM] CallbackTpl     = %d (0=APPLICATION 16=CALLBACK 31=HIGH)\n", (UINT32)OldTpl));
+-
+-  if (mHandle != NULL) {
+-    St = gBS->ConnectController (mHandle, NULL, NULL, TRUE);
+-    DEBUG ((EFI_D_ERROR, "[XNU-RAM] ConnectStatus   = %r (scoped to RAM disk)\n", St));
+-  }
+-
+   St = gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL, &Count, &Handles);
+   DEBUG ((EFI_D_ERROR, "[XNU-RAM] SimpleFsReady   = %d handle(s), status %r\n", (UINT32)Count, St));
+-  if (!EFI_ERROR (St) && Handles != NULL) {
+-    for (UINTN i = 0; i < Count && !Found; i++) {
+-      Sfs = NULL;
+-      if (EFI_ERROR (gBS->HandleProtocol (Handles[i], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Sfs)))
+-        continue;
+-      DEBUG ((EFI_D_ERROR, "[XNU-RAM] Trying Sfs[%d] = %p\n", (UINT32)i, Handles[i]));
+-      if (!EFI_ERROR (ProbeVolume (Sfs))) Found = TRUE;
+-    }
+-    FreePool (Handles);
++  if (EFI_ERROR (St) || Handles == NULL) return FALSE;
++
++  for (UINTN i = 0; i < Count && !Found; i++) {
++    Sfs = NULL;
++    if (EFI_ERROR (gBS->HandleProtocol (Handles[i], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Sfs)))
++      continue;
++    DEBUG ((EFI_D_ERROR, "[XNU-RAM] Trying Sfs[%d] = %p\n", (UINT32)i, Handles[i]));
++    if (!EFI_ERROR (ProbeVolume (Sfs))) Found = TRUE;
+   }
+-  if (!Found) DEBUG ((EFI_D_ERROR, "[XNU-RAM] FileRead        = NO_VOLUME\n"));
++  FreePool (Handles);
++  return Found;
+ }
+ 
+ EFI_STATUS EFIAPI XnuRamDiskDxeEntryPoint (IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
+@@ -144,29 +154,34 @@ EFI_STATUS EFIAPI XnuRamDiskDxeEntryPoint (IN EFI_HANDLE ImageHandle, IN EFI_SYS
+   EFI_STATUS St;
+   EFI_DEVICE_PATH_PROTOCOL *Dp;
+   VENDOR_DEVICE_PATH *Vn;
++  EFI_TPL Tpl;
+ 
+   DEBUG ((EFI_D_ERROR, "[XNU-RAM] XnuRamDiskDxe entry (BlockIo mode)\n"));
+ 
++  Tpl = gBS->RaiseTPL (TPL_HIGH_LEVEL);
++  gBS->RestoreTPL (Tpl);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] EntryTpl        = %d (4=APPLICATION 8=CALLBACK 16=NOTIFY 31=HIGH)\n", (UINT32)Tpl));
++
+   St = GetSectionFromAnyFv (&mXnuFatGuid, EFI_SECTION_RAW, 0, &mFatImage, &mFatSize);
+   DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageFound      = %r\n", St));
+   if (EFI_ERROR (St) || mFatImage == NULL) { DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageSize       = 0 (abort)\n")); return EFI_SUCCESS; }
+   DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageSize       = %d bytes @ %p\n", (UINT32)mFatSize, mFatImage));
+ 
+-  if (mFatSize < XNU_BLOCK_SIZE) { DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageSize       = too small (abort)\n")); return EFI_SUCCESS; }
++  if (mFatSize < 512) { DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageSize       = too small (abort)\n")); return EFI_SUCCESS; }
+ 
+   ZeroMem (&mMedia, sizeof (mMedia));
+-  mMedia.MediaId          = 0x584E5531;   // 'XNU1'
++  mMedia.MediaId          = 0x584E5531;
+   mMedia.RemovableMedia   = FALSE;
+   mMedia.MediaPresent     = TRUE;
+   mMedia.LogicalPartition = FALSE;
+   mMedia.ReadOnly         = TRUE;
+-  mMedia.BlockSize        = XNU_BLOCK_SIZE;
++  mMedia.BlockSize        = 512;
+   mMedia.IoAlign          = 1;
+-  mMedia.LastBlock        = (EFI_LBA)(mFatSize / XNU_BLOCK_SIZE) - 1;
++  mMedia.LastBlock        = (EFI_LBA)(mFatSize / 512) - 1;
+ 
+-  mBlockIo.Revision = EFI_BLOCK_IO_PROTOCOL_REVISION;
+-  mBlockIo.Media    = &mMedia;
+-  mBlockIo.Reset    = BlkReset;
++  mBlockIo.Revision    = EFI_BLOCK_IO_PROTOCOL_REVISION;
++  mBlockIo.Media       = &mMedia;
++  mBlockIo.Reset       = BlkReset;
+   mBlockIo.ReadBlocks  = BlkRead;
+   mBlockIo.WriteBlocks = BlkWrite;
+   mBlockIo.FlushBlocks = BlkFlush;
+@@ -185,8 +200,16 @@ EFI_STATUS EFIAPI XnuRamDiskDxeEntryPoint (IN EFI_HANDLE ImageHandle, IN EFI_SYS
+   DEBUG ((EFI_D_ERROR, "[XNU-RAM] DevicePath      = %p handle=%p\n", Dp, mHandle));
+   if (EFI_ERROR (St)) return EFI_SUCCESS;
+ 
+-  St = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_APPLICATION, XnuReadyToBoot, NULL,
+-                           &gEfiEventReadyToBootGuid, &mReadyToBoot);
+-  DEBUG ((EFI_D_ERROR, "[XNU-RAM] ReadyToBootEvt  = %r\n", St));
++  //
++  // DiskIo/Partition/Fat are in the APRIORI list, so their Driver Bindings
++  // are already installed when a normal DXE driver runs. Connect only our
++  // own controller; Recursive lets DiskIo -> Partition -> Fat cascade.
++  //
++  St = gBS->ConnectController (mHandle, NULL, NULL, TRUE);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] ConnectStatus   = %r (scoped to RAM disk)\n", St));
++
++  if (!ProbeAllVolumes ()) {
++    DEBUG ((EFI_D_ERROR, "[XNU-RAM] FileRead        = NO_VOLUME\n"));
++  }
+   return EFI_SUCCESS;
+ }

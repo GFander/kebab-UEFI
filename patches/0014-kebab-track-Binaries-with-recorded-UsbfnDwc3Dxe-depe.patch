@@ -1,0 +1,18 @@
+From 6c0bc92f206a0cdebd06dee4ce8c71477cbfe9f7 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 19:37:54 +0800
+Subject: [PATCH 14/38] kebab: track Binaries with recorded UsbfnDwc3Dxe depex
+
+No firmware bytes change: the depex content is byte-identical to what every
+image since A9 was built from. A12 image hash is unaffected.
+---
+ Binaries | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Binaries b/Binaries
+index 6a86d715..c88f2796 160000
+--- a/Binaries
++++ b/Binaries
+@@ -1 +1 @@
+-Subproject commit 6a86d7152ef65d1e67cd893e5cc5e009c27d5b7d
++Subproject commit c88f2796c4664703e61da9bc7435f77a52a87621

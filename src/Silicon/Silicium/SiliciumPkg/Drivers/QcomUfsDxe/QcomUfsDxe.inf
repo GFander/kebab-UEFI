@@ -1,0 +1,38 @@
+## @file
+#  XNU-004: Qualcomm UFS host controller adapter for UfsPassThruDxe.
+##
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = QcomUfsDxe
+  FILE_GUID      = 1D4A7E36-8B52-4C09-A7F3-5E9D2B6C0A47
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = QcomUfsDxeEntry
+
+[Sources]
+  QcomUfsDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  UefiLib
+  DebugLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DevicePathLib
+  IoLib
+  CacheMaintenanceLib
+
+[Protocols]
+  gEfiDevicePathProtocolGuid
+  gEdkiiUfsHostControllerProtocolGuid
+  gEdkiiUfsHcPlatformProtocolGuid
+
+[Depex]
+  TRUE

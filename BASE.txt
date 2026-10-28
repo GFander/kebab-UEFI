@@ -1,0 +1,7 @@
+base_commit = 6c6755012728c9f7de748228758bad94d1e9a660
+base_subject = Add Samsung Galaxy S8 and S5E8895 support (#2160)
+head_commit = 7013966cf3680d7e82cbd69f4a799b2de8f24cdb
+branch = experiment/kebab-xnu-ramdisk
+commits_ahead = 38
+Binaries = c88f2796c4664703e61da9bc7435f77a52a87621
+Mu_Basecore = cfb93724a06ff86ff5ba971413368a7809ee42a5

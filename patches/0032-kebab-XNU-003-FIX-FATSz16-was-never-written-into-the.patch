@@ -1,0 +1,37 @@
+From 3ca62e7fcaa115cd9fbfc524147e07b5ddccefd8 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:41:49 +0800
+Subject: [PATCH 32/38] kebab: XNU-003 FIX FATSz16 was never written into the
+ BPB
+
+The generated volume left BPB_FATSz16 (offset 22) at zero, so the FAT
+driver could not locate the data area; UniXNU saw no unixnu.toml and fell
+back to its built-in menu. The validated XNU-001b image has FATSz16=3.
+
+Now one sector per FAT (258 entries * 1.5 bytes = 387 <= 512).
+---
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 524288 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12_dir.py      |   1 +
+ 2 files changed, 1 insertion(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index d6e33f72268e2890aaea54d22b68c71d79d970c2..0002f0bd64250756a9d71c31598601fc8e79f8b6 100644
+GIT binary patch
+delta 35
+qcmZo@P-tjSm>|Z;*eKpA&e$r>)GE&0D$dd>&e|%@wpE<{<$nOHg$elp
+
+delta 35
+qcmZo@P-tjSm>|Z;&?w$2&e$r>)GE&0D$dd>&e|%@wpE<{<$nOHYYF%O
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+index e2e12f3c..1dc272db 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -150,6 +150,7 @@ def build(tree, out_path):
+     struct.pack_into("<H", bs, 14, RESERVED)
+     bs[16] = NUM_FATS
+     struct.pack_into("<H", bs, 17, ROOT_ENTRIES)
++    struct.pack_into("<H", bs, 22, 1)   # FATSz16: one sector per FAT
+     struct.pack_into("<H", bs, 19, TOTAL_SECTORS)
+     bs[21] = 0xF8
+     struct.pack_into("<H", bs, 24, 1)

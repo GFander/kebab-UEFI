@@ -1,0 +1,238 @@
+From fc3e85b51a1040e4d63a8cd5402325c646d91160 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 17:22:50 +0800
+Subject: [PATCH 09/38] kebab: Gate-2C-A10 passive USB Config timing/ownership
+ diagnostics
+
+Strictly passive; no vendor Supported()/Start(), no ConnectController, no
+BY_DRIVER, no PMIC/MMIO.
+
+- [USBCFG/NOTIFY] RegisterProtocolNotify on E722B03F with a monotonic
+  sequence number; prints handle + Field88/Field8C at publication time.
+- [USBDEV] OpenProtocolInformation details: per-entry ControllerHandle,
+  Attributes (BY_DRIVER flagged), OpenCount, AgentHandle, plus agent
+  resolution via LoadedImage->FilePath FV FILE_GUID and an
+  'is this agent a DriverBinding' probe.
+- Sampling points now carry explicit ids (#1-early, /R2B).
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 186 +++++++++++++++++-
+ 1 file changed, 184 insertions(+), 2 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index 3b16b997..455bd3d9 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -131,6 +131,14 @@ STATIC
+ VOID
+ UsbDevConfigFields (CONST CHAR8 *Tag);
+ 
++STATIC
++VOID
++UsbDevConfigOpenDetails (CONST CHAR8 *Tag);
++
++STATIC
++VOID
++UsbDevArmConfigNotify (VOID);
++
+ STATIC EFI_GUID mUsbCfgCand[] = {
+   { 0xB898D8DC, 0x080A, 0x40F7, { 0x99, 0xE3, 0x31, 0x62, 0x7B, 0x80, 0x6A, 0x5A }},
+   { 0x0A134F0E, 0x075E, 0x40B3, { 0x9C, 0x63, 0x3B, 0x39, 0x06, 0x80, 0x46, 0x63 }},
+@@ -420,6 +428,177 @@ UsbDevConfigFields (
+   DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgVtableCalls  = 0 (never invoked)\n", Tag));
+ }
+ 
++//
++// Gate-2C-A10: passive diagnostics for USB Config publication timing and
++// protocol ownership. STRICTLY PASSIVE:
++//   - never calls any vendor Driver Binding Supported()/Start()
++//   - never calls ConnectController()/DisconnectController()
++//   - never opens BY_DRIVER
++//   - never touches PMIC/MMIO
++//
++STATIC UINT32     mUsbCfgNotifySeq = 0;
++STATIC EFI_EVENT  mUsbCfgNotifyEvt = NULL;
++STATIC EFI_GUID   mUsbdDriverBindingGuid = { 0x18A031AB, 0xB443, 0x4D1A, { 0xA5, 0xC0, 0x0C, 0x09, 0x26, 0x1E, 0x9F, 0x71 }};
++
++STATIC
++VOID
++UsbDevPrintAgent (
++  IN CONST CHAR8 *Tag,
++  IN UINT32       Idx,
++  IN UINT32       Ent,
++  IN EFI_HANDLE   Agent
++  )
++{
++  EFI_STATUS                   St;
++  EFI_LOADED_IMAGE_PROTOCOL   *Li = NULL;
++  EFI_DRIVER_BINDING_PROTOCOL *Db = NULL;
++  EFI_GUID                    *FileGuid = NULL;
++  UINT8                       *Node;
++  UINT8                        F88;
++  UINT8                        F8C;
++
++  // Try to map the agent handle to a loaded image and its FV file GUID.
++  St = gBS->HandleProtocol (Agent, &gEfiLoadedImageProtocolGuid, (VOID **)&Li);
++  if (!EFI_ERROR (St) && (Li != NULL) && (Li->FilePath != NULL)) {
++    for (Node = (UINT8 *)Li->FilePath; !IsDevicePathEnd ((EFI_DEVICE_PATH_PROTOCOL *)Node);
++         Node = (UINT8 *)NextDevicePathNode ((EFI_DEVICE_PATH_PROTOCOL *)Node)) {
++      if ((DevicePathType ((EFI_DEVICE_PATH_PROTOCOL *)Node) == MEDIA_DEVICE_PATH) &&
++          (DevicePathSubType ((EFI_DEVICE_PATH_PROTOCOL *)Node) == USBD_MEDIA_FV_FILEPATH_SUBTYPE)) {
++        FileGuid = &((USBD_FV_FILEPATH_NODE *)Node)->Name;
++        break;
++      }
++    }
++  }
++
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentHandle[%d,%d]      = %p\n", Tag, Idx, Ent, Agent));
++
++  if (FileGuid != NULL) {
++    F88 = FileGuid->Data4[6];
++    F8C = FileGuid->Data4[7];
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentFileGuid[%d,%d]   = %08x-%04x-%04x (%02x%02x)\n",
++            Tag, Idx, Ent, FileGuid->Data1, FileGuid->Data2, FileGuid->Data3, F88, F8C));
++  } else {
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentFileGuid[%d,%d]   = UNKNOWN\n", Tag, Idx, Ent));
++  }
++
++  // Is the agent itself a DriverBinding?
++  St = gBS->HandleProtocol (Agent, &mUsbdDriverBindingGuid, (VOID **)&Db);
++  if (!EFI_ERROR (St) && (Db != NULL)) {
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentIsDriverBinding[%d,%d] = 1 (ImageHandle=%p)\n",
++            Tag, Idx, Ent, Db->ImageHandle));
++  } else {
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentIsDriverBinding[%d,%d] = 0\n", Tag, Idx, Ent));
++  }
++}
++
++STATIC
++VOID
++UsbDevConfigOpenDetails (
++  IN CONST CHAR8 *Tag
++  )
++{
++  EFI_STATUS                           St;
++  EFI_HANDLE                          *Handles = NULL;
++  UINTN                                Count   = 0;
++  EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *Info    = NULL;
++  UINTN                                InfoCount;
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &mUsbdUsbConfigGuid, NULL, &Count, &Handles);
++  if (EFI_ERROR (St) || (Handles == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] OpenDetailEnum = %r\n", Tag, St));
++    return;
++  }
++
++  for (UINTN i = 0; i < Count; i++) {
++    Info      = NULL;
++    InfoCount = 0;
++    St = gBS->OpenProtocolInformation (Handles[i], &mUsbdUsbConfigGuid, &Info, &InfoCount);
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigHandle[%d] = %p  OpenEntryCount[%d] = %d\n",
++            Tag, (UINT32)i, Handles[i], (UINT32)i, (UINT32)InfoCount));
++    if (EFI_ERROR (St)) {
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] OpenDetailStatus[%d] = %r\n", Tag, (UINT32)i, St));
++      continue;
++    }
++    for (UINTN j = 0; j < InfoCount; j++) {
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] ControllerHandle[%d,%d] = %p\n", Tag, (UINT32)i, (UINT32)j, Info[j].ControllerHandle));
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] Attributes[%d,%d]       = 0x%08x%s\n", Tag, (UINT32)i, (UINT32)j,
++              Info[j].Attributes,
++              ((Info[j].Attributes & EFI_OPEN_PROTOCOL_BY_DRIVER) != 0) ? " (BY_DRIVER)" : ""));
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] OpenCount[%d,%d]        = %d\n", Tag, (UINT32)i, (UINT32)j, (UINT32)Info[j].OpenCount));
++      UsbDevPrintAgent (Tag, (UINT32)i, (UINT32)j, Info[j].AgentHandle);
++    }
++    if (Info != NULL) {
++      FreePool (Info);
++    }
++  }
++  FreePool (Handles);
++}
++
++STATIC
++VOID
++EFIAPI
++UsbCfgNotifyCallback (
++  IN EFI_EVENT Event,
++  IN VOID     *Context
++  )
++{
++  EFI_STATUS  St;
++  EFI_HANDLE  Handle;
++  UINTN       Size;
++  UINT8      *Ifc;
++  UINT32      F88;
++  UINT32      F8C;
++  EFI_STATUS  CloseSt;
++
++  for (;;) {
++    Handle = NULL;
++    Size   = sizeof (Handle);
++    St     = gBS->LocateHandle (ByRegisterNotify, NULL, Event, &Size, &Handle);
++    if (EFI_ERROR (St)) {
++      break;   // no more notifications for this event
++    }
++
++    mUsbCfgNotifySeq++;
++
++    Ifc = NULL;
++    St  = gBS->OpenProtocol (Handle, &mUsbdUsbConfigGuid, (VOID **)&Ifc,
++                             gImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
++    if (!EFI_ERROR (St) && (Ifc != NULL)) {
++      F88 = ReadUnaligned32 ((UINT32 *)(Ifc + 0x88));
++      F8C = ReadUnaligned32 ((UINT32 *)(Ifc + 0x8C));
++      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Sequence=%d Handle=%p Field88=0x%08x Field8C=0x%08x\n",
++              mUsbCfgNotifySeq, Handle, F88, F8C));
++      CloseSt = gBS->CloseProtocol (Handle, &mUsbdUsbConfigGuid, gImageHandle, NULL);
++      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Sequence=%d Close=%r\n", mUsbCfgNotifySeq, CloseSt));
++    } else {
++      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Sequence=%d Handle=%p OpenStatus=%r (no read)\n",
++              mUsbCfgNotifySeq, Handle, St));
++    }
++  }
++}
++
++STATIC
++VOID
++UsbDevArmConfigNotify (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  VOID       *Registration = NULL;
++
++  St = gBS->CreateEvent (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, UsbCfgNotifyCallback, NULL, &mUsbCfgNotifyEvt);
++  if (EFI_ERROR (St)) {
++    DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] CreateEvent failed: %r\n", St));
++    return;
++  }
++  St = gBS->RegisterProtocolNotify (&mUsbdUsbConfigGuid, mUsbCfgNotifyEvt, &Registration);
++  if (EFI_ERROR (St)) {
++    DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Register failed: %r\n", St));
++  } else {
++    DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] registered (passive, read-only)\n"));
++  }
++}
++
+ STATIC
+ VOID
+ EFIAPI
+@@ -430,6 +609,7 @@ UsbDevReadyToBoot (
+ {
+   UsbDevReport ("/R2B");
+   UsbDevConfigFields ("/R2B");
++  UsbDevConfigOpenDetails ("/R2B");
+ }
+ 
+ STATIC
+@@ -669,8 +849,10 @@ ManageRam (
+   DiagDumpProtocols ();
+   DumpUsbfnPrereq ();
+   DumpUsbCfgCandidates ();
+-  UsbDevReport ("");
+-  UsbDevConfigFields ("");
++  UsbDevReport ("#1-early");
++  UsbDevConfigFields ("#1-early");
++  UsbDevConfigOpenDetails ("#1-early");
++  UsbDevArmConfigNotify ();
+   UsbDevArmReadyToBoot ();
+ 
+   // Arm a one-shot dump that fires after BDS has connected all drivers

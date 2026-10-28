@@ -1,0 +1,123 @@
+From 4f4f61ef7d13f8aeefe8006d87b62aa8fe3e9f71 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 16:06:20 +0800
+Subject: [PATCH 06/38] kebab: Gate-2C-A4 USB Config Supported-criteria
+ diagnostics
+
+Read-only probe for the two fields UsbfnDwc3Dxe!DriverBindingSupported
+compares (Gate-2C-A3): USBConfig[+0x88] <= 3 and USBConfig[+0x8C] == 4.
+
+- Enumerates every USB Config (E722B03F) handle via LocateHandleBuffer
+- HandleProtocol only (BY_HANDLE_PROTOCOL); never BY_DRIVER
+- Never calls any USB Config vtable method
+- Never modifies the interface; releases its own open with CloseProtocol
+- Printed at both sample points: [USBDEV] and [USBDEV/R2B]
+- Reports UNKNOWN instead of dereferencing an invalid interface
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 72 +++++++++++++++++++
+ 1 file changed, 72 insertions(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index 83231198..b9491ab4 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -127,6 +127,10 @@ STATIC
+ VOID
+ UsbDevArmReadyToBoot (VOID);
+ 
++STATIC
++VOID
++UsbDevConfigFields (CONST CHAR8 *Tag);
++
+ STATIC EFI_GUID mUsbCfgCand[] = {
+   { 0xB898D8DC, 0x080A, 0x40F7, { 0x99, 0xE3, 0x31, 0x62, 0x7B, 0x80, 0x6A, 0x5A }},
+   { 0x0A134F0E, 0x075E, 0x40B3, { 0x9C, 0x63, 0x3B, 0x39, 0x06, 0x80, 0x46, 0x63 }},
+@@ -334,6 +338,72 @@ UsbDevReport (
+   DEBUG ((EFI_D_ERROR, "[USBDEV%s] CoreBase/Role      = UNKNOWN (no public API)\n", Tag));
+ }
+ 
++//
++// Gate-2C-A4: read the two fields that UsbfnDwc3Dxe!DriverBindingSupported
++// compares against (see Gate-2C-A3):
++//     USBConfig[+0x88] <= 3   and   USBConfig[+0x8C] == 4
++//
++// Strictly read-only:
++//   - LocateHandleBuffer + HandleProtocol (BY_HANDLE_PROTOCOL semantics)
++//   - never opens BY_DRIVER, never calls any USB Config vtable method
++//   - does not modify the interface
++//   - releases its own open with CloseProtocol
++//
++STATIC
++VOID
++UsbDevConfigFields (
++  IN CONST CHAR8 *Tag
++  )
++{
++  EFI_STATUS  Status;
++  EFI_HANDLE *Handles = NULL;
++  UINTN       Count   = 0;
++  UINT8      *Ifc;
++  UINT32      F88;
++  UINT32      F8C;
++
++  Status = gBS->LocateHandleBuffer (
++                  ByProtocol,
++                  &mUsbdUsbConfigGuid,
++                  NULL,
++                  &Count,
++                  &Handles
++                  );
++  if (EFI_ERROR (Status) || (Handles == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgEnumStatus = %r (no handles)\n", Tag, Status));
++    return;
++  }
++
++  for (UINTN i = 0; i < Count; i++) {
++    Ifc    = NULL;
++    Status = gBS->HandleProtocol (
++                    Handles[i],
++                    &mUsbdUsbConfigGuid,
++                    (VOID **)&Ifc
++                    );
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigHandle[%d] = %p\n", Tag, (UINT32)i, Handles[i]));
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigStatus[%d] = %r\n", Tag, (UINT32)i, Status));
++
++    if (!EFI_ERROR (Status) && (Ifc != NULL)) {
++      F88 = *(UINT32 *)(Ifc + 0x88);
++      F8C = *(UINT32 *)(Ifc + 0x8C);
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField88[%d]   = 0x%08x (need <= 3)\n", Tag, (UINT32)i, F88));
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField8C[%d]   = 0x%08x (need == 4)\n", Tag, (UINT32)i, F8C));
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgWouldBind[%d] = %d\n", Tag, (UINT32)i,
++              (UINT32)(((F88 <= 3) && (F8C == 4)) ? 1 : 0)));
++      gBS->CloseProtocol (Handles[i], &mUsbdUsbConfigGuid, gImageHandle, NULL);
++    } else {
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField88[%d]   = UNKNOWN\n", Tag, (UINT32)i));
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField8C[%d]   = UNKNOWN\n", Tag, (UINT32)i));
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgWouldBind[%d] = UNKNOWN\n", Tag, (UINT32)i));
++    }
++  }
++
++  FreePool (Handles);
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgFieldScanned = %d\n", Tag, (UINT32)Count));
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgVtableCalls  = 0 (never invoked)\n", Tag));
++}
++
+ STATIC
+ VOID
+ EFIAPI
+@@ -343,6 +413,7 @@ UsbDevReadyToBoot (
+   )
+ {
+   UsbDevReport ("/R2B");
++  UsbDevConfigFields ("/R2B");
+ }
+ 
+ STATIC
+@@ -583,6 +654,7 @@ ManageRam (
+   DumpUsbfnPrereq ();
+   DumpUsbCfgCandidates ();
+   UsbDevReport ("");
++  UsbDevConfigFields ("");
+   UsbDevArmReadyToBoot ();
+ 
+   // Arm a one-shot dump that fires after BDS has connected all drivers

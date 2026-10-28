@@ -1,0 +1,307 @@
+From d57ec963e80b766814b4e489b349c27cbdbd1087 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 17:31:43 +0800
+Subject: [PATCH 10/38] kebab: Gate-2C-A10b fix notify baseline and
+ agent-handle pairing
+
+- BASELINE snapshot taken before RegisterProtocolNotify. EDK2 Notify.c sets
+  ProtNotify->Position = &ProtEntry->Protocols, so the first callback re-walks
+  every pre-existing instance; without a baseline those would be misread as
+  new installs.
+- Callback now counts callbacks/seen/new separately; newly seen handles are
+  remembered so they are never double-counted, and only genuinely new ones
+  print [USBCFG/NOTIFY] ... NEW.
+- All identity lookups (LoadedImage, DriverBinding) now use
+  OpenProtocol(GET_PROTOCOL)/CloseProtocol with our own AgentHandle;
+  HandleProtocol is gone (it opens as gDxeCoreImageHandle and cannot be
+  closed by us). Close status is checked and printed on failure.
+- AgentHandle is no longer equated with ImageHandle: both ImageHandle and
+  DriverBindingHandle are printed, UNKNOWN reported when unresolvable.
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 208 +++++++++++++-----
+ 1 file changed, 156 insertions(+), 52 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index 455bd3d9..88865de2 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -429,17 +429,71 @@ UsbDevConfigFields (
+ }
+ 
+ //
+-// Gate-2C-A10: passive diagnostics for USB Config publication timing and
+-// protocol ownership. STRICTLY PASSIVE:
+-//   - never calls any vendor Driver Binding Supported()/Start()
+-//   - never calls ConnectController()/DisconnectController()
+-//   - never opens BY_DRIVER
+-//   - never touches PMIC/MMIO
++// Gate-2C-A10b: passive diagnostics, corrected.
++//   - BASELINE snapshot separates pre-existing instances from real notifications
++//     (EDK2 Notify.c sets ProtNotify->Position = &ProtEntry->Protocols, so the
++//      first callback re-walks every existing instance).
++//   - All identity lookups use OpenProtocol(GET_PROTOCOL)/CloseProtocol with a
++//     matched AgentHandle; no HandleProtocol (which opens as gDxeCoreImageHandle).
++//   - Strictly passive: no Supported()/Start()/ConnectController/BY_DRIVER.
+ //
+-STATIC UINT32     mUsbCfgNotifySeq = 0;
+-STATIC EFI_EVENT  mUsbCfgNotifyEvt = NULL;
++#define USBD_BASELINE_MAX  8
++
++STATIC UINT32     mUsbCfgNotifySeq   = 0;   // notifications that actually fired
++STATIC UINT32     mUsbCfgSeenCount   = 0;   // handles reported total
++STATIC UINT32     mUsbCfgNewCount    = 0;   // handles NOT in baseline
++STATIC EFI_HANDLE mUsbCfgBaseline[USBD_BASELINE_MAX];
++STATIC UINT32     mUsbCfgBaselineCount = 0;
++STATIC EFI_EVENT  mUsbCfgNotifyEvt   = NULL;
+ STATIC EFI_GUID   mUsbdDriverBindingGuid = { 0x18A031AB, 0xB443, 0x4D1A, { 0xA5, 0xC0, 0x0C, 0x09, 0x26, 0x1E, 0x9F, 0x71 }};
+ 
++STATIC
++BOOLEAN
++UsbdIsBaseline (
++  IN EFI_HANDLE Handle
++  )
++{
++  for (UINTN i = 0; i < mUsbCfgBaselineCount; i++) {
++    if (mUsbCfgBaseline[i] == Handle) {
++      return TRUE;
++    }
++  }
++  return FALSE;
++}
++
++STATIC
++VOID
++UsbdPrintCoreFields (
++  IN CONST CHAR8 *Kind,
++  IN UINT32       Seq,
++  IN EFI_HANDLE   Handle
++  )
++{
++  EFI_STATUS Status;
++  UINT8     *Ifc = NULL;
++  UINT32     F88;
++  UINT32     F8C;
++  EFI_STATUS CloseSt;
++
++  Status = gBS->OpenProtocol (Handle, &mUsbdUsbConfigGuid, (VOID **)&Ifc,
++                              gImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
++  if (EFI_ERROR (Status) || (Ifc == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[USBCFG/%a] Seq=%d Handle=%p OpenStatus=%r (no read)\n",
++            Kind, Seq, Handle, Status));
++    return;
++  }
++
++  F88 = ReadUnaligned32 ((UINT32 *)(Ifc + 0x88));
++  F8C = ReadUnaligned32 ((UINT32 *)(Ifc + 0x8C));
++  DEBUG ((EFI_D_ERROR, "[USBCFG/%a] Seq=%d Handle=%p Core=%d Field88=0x%08x Field8C=0x%08x\n",
++          Kind, Seq, Handle, F88, F88, F8C));
++
++  CloseSt = gBS->CloseProtocol (Handle, &mUsbdUsbConfigGuid, gImageHandle, NULL);
++  if (EFI_ERROR (CloseSt)) {
++    DEBUG ((EFI_D_ERROR, "[USBCFG/%a] Seq=%d Close=%r  <== UNBALANCED\n", Kind, Seq, CloseSt));
++  }
++}
++
+ STATIC
+ VOID
+ UsbDevPrintAgent (
+@@ -450,44 +504,58 @@ UsbDevPrintAgent (
+   )
+ {
+   EFI_STATUS                   St;
++  EFI_STATUS                   CloseSt;
+   EFI_LOADED_IMAGE_PROTOCOL   *Li = NULL;
+   EFI_DRIVER_BINDING_PROTOCOL *Db = NULL;
+   EFI_GUID                    *FileGuid = NULL;
+-  UINT8                       *Node;
+-  UINT8                        F88;
+-  UINT8                        F8C;
++  EFI_DEVICE_PATH_PROTOCOL    *Node;
+ 
+-  // Try to map the agent handle to a loaded image and its FV file GUID.
+-  St = gBS->HandleProtocol (Agent, &gEfiLoadedImageProtocolGuid, (VOID **)&Li);
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentHandle[%d,%d]      = %p\n", Tag, Idx, Ent, Agent));
++
++  //
++  // LoadedImage: OpenProtocol(GET_PROTOCOL) with our own agent handle.
++  //
++  St = gBS->OpenProtocol (Agent, &gEfiLoadedImageProtocolGuid, (VOID **)&Li,
++                          gImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+   if (!EFI_ERROR (St) && (Li != NULL) && (Li->FilePath != NULL)) {
+-    for (Node = (UINT8 *)Li->FilePath; !IsDevicePathEnd ((EFI_DEVICE_PATH_PROTOCOL *)Node);
+-         Node = (UINT8 *)NextDevicePathNode ((EFI_DEVICE_PATH_PROTOCOL *)Node)) {
+-      if ((DevicePathType ((EFI_DEVICE_PATH_PROTOCOL *)Node) == MEDIA_DEVICE_PATH) &&
+-          (DevicePathSubType ((EFI_DEVICE_PATH_PROTOCOL *)Node) == USBD_MEDIA_FV_FILEPATH_SUBTYPE)) {
++    for (Node = Li->FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
++      if ((DevicePathType (Node) == MEDIA_DEVICE_PATH) &&
++          (DevicePathSubType (Node) == USBD_MEDIA_FV_FILEPATH_SUBTYPE)) {
+         FileGuid = &((USBD_FV_FILEPATH_NODE *)Node)->Name;
+         break;
+       }
+     }
+-  }
+-
+-  DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentHandle[%d,%d]      = %p\n", Tag, Idx, Ent, Agent));
+-
+-  if (FileGuid != NULL) {
+-    F88 = FileGuid->Data4[6];
+-    F8C = FileGuid->Data4[7];
+-    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentFileGuid[%d,%d]   = %08x-%04x-%04x (%02x%02x)\n",
+-            Tag, Idx, Ent, FileGuid->Data1, FileGuid->Data2, FileGuid->Data3, F88, F8C));
++    if (FileGuid != NULL) {
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentFileGuid[%d,%d]   = %08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x\n",
++              Tag, Idx, Ent,
++              FileGuid->Data1, FileGuid->Data2, FileGuid->Data3,
++              FileGuid->Data4[0], FileGuid->Data4[1], FileGuid->Data4[2], FileGuid->Data4[3],
++              FileGuid->Data4[4], FileGuid->Data4[5], FileGuid->Data4[6], FileGuid->Data4[7]));
++    } else {
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentFileGuid[%d,%d]   = UNKNOWN (no FV node)\n", Tag, Idx, Ent));
++    }
+   } else {
+-    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentFileGuid[%d,%d]   = UNKNOWN\n", Tag, Idx, Ent));
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentFileGuid[%d,%d]   = UNKNOWN (status %r)\n", Tag, Idx, Ent, St));
++  }
++  CloseSt = gBS->CloseProtocol (Agent, &gEfiLoadedImageProtocolGuid, gImageHandle, NULL);
++  if (EFI_ERROR (CloseSt)) {
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentLiClose[%d,%d]    = %r  <== UNBALANCED\n", Tag, Idx, Ent, CloseSt));
+   }
+ 
+-  // Is the agent itself a DriverBinding?
+-  St = gBS->HandleProtocol (Agent, &mUsbdDriverBindingGuid, (VOID **)&Db);
++  //
++  // Is the agent a DriverBinding? Report both handles; do NOT equate them.
++  //
++  St = gBS->OpenProtocol (Agent, &mUsbdDriverBindingGuid, (VOID **)&Db,
++                          gImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+   if (!EFI_ERROR (St) && (Db != NULL)) {
+-    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentIsDriverBinding[%d,%d] = 1 (ImageHandle=%p)\n",
+-            Tag, Idx, Ent, Db->ImageHandle));
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentIsDriverBinding[%d,%d] = 1 ImageHandle=%p DriverBindingHandle=%p\n",
++            Tag, Idx, Ent, Db->ImageHandle, Db->DriverBindingHandle));
+   } else {
+-    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentIsDriverBinding[%d,%d] = 0\n", Tag, Idx, Ent));
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentIsDriverBinding[%d,%d] = 0 (status %r)\n", Tag, Idx, Ent, St));
++  }
++  CloseSt = gBS->CloseProtocol (Agent, &mUsbdDriverBindingGuid, gImageHandle, NULL);
++  if (EFI_ERROR (CloseSt)) {
++    DEBUG ((EFI_D_ERROR, "[USBDEV%s] AgentDbClose[%d,%d]    = %r  <== UNBALANCED\n", Tag, Idx, Ent, CloseSt));
+   }
+ }
+ 
+@@ -534,6 +602,36 @@ UsbDevConfigOpenDetails (
+   FreePool (Handles);
+ }
+ 
++STATIC
++VOID
++UsbCfgBaselineSnapshot (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  EFI_HANDLE *Handles = NULL;
++  UINTN       Count   = 0;
++
++  mUsbCfgBaselineCount = 0;
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &mUsbdUsbConfigGuid, NULL, &Count, &Handles);
++  if (EFI_ERROR (St) || (Handles == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[USBCFG/BASELINE] none or error %r\n", St));
++    return;
++  }
++
++  for (UINTN i = 0; i < Count; i++) {
++    if (mUsbCfgBaselineCount < USBD_BASELINE_MAX) {
++      mUsbCfgBaseline[mUsbCfgBaselineCount++] = Handles[i];
++    }
++    UsbdPrintCoreFields ("BASELINE", (UINT32)(i + 1), Handles[i]);
++  }
++  DEBUG ((EFI_D_ERROR, "[USBCFG/BASELINE] count=%d (pre-existing, registered before any callback)\n",
++          (UINT32)mUsbCfgBaselineCount));
++
++  FreePool (Handles);
++}
++
+ STATIC
+ VOID
+ EFIAPI
+@@ -545,36 +643,36 @@ UsbCfgNotifyCallback (
+   EFI_STATUS  St;
+   EFI_HANDLE  Handle;
+   UINTN       Size;
+-  UINT8      *Ifc;
+-  UINT32      F88;
+-  UINT32      F8C;
+-  EFI_STATUS  CloseSt;
++
++  mUsbCfgNotifySeq++;
++  DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d begin\n", mUsbCfgNotifySeq));
+ 
+   for (;;) {
+     Handle = NULL;
+     Size   = sizeof (Handle);
+     St     = gBS->LocateHandle (ByRegisterNotify, NULL, Event, &Size, &Handle);
+     if (EFI_ERROR (St)) {
+-      break;   // no more notifications for this event
++      break;
+     }
+ 
+-    mUsbCfgNotifySeq++;
++    mUsbCfgSeenCount++;
+ 
+-    Ifc = NULL;
+-    St  = gBS->OpenProtocol (Handle, &mUsbdUsbConfigGuid, (VOID **)&Ifc,
+-                             gImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+-    if (!EFI_ERROR (St) && (Ifc != NULL)) {
+-      F88 = ReadUnaligned32 ((UINT32 *)(Ifc + 0x88));
+-      F8C = ReadUnaligned32 ((UINT32 *)(Ifc + 0x8C));
+-      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Sequence=%d Handle=%p Field88=0x%08x Field8C=0x%08x\n",
+-              mUsbCfgNotifySeq, Handle, F88, F8C));
+-      CloseSt = gBS->CloseProtocol (Handle, &mUsbdUsbConfigGuid, gImageHandle, NULL);
+-      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Sequence=%d Close=%r\n", mUsbCfgNotifySeq, CloseSt));
++    if (UsbdIsBaseline (Handle)) {
++      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d Handle=%p -> pre-existing (see BASELINE), not a new install\n",
++              mUsbCfgNotifySeq, Handle));
+     } else {
+-      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Sequence=%d Handle=%p OpenStatus=%r (no read)\n",
+-              mUsbCfgNotifySeq, Handle, St));
++      mUsbCfgNewCount++;
++      if (mUsbCfgBaselineCount < USBD_BASELINE_MAX) {
++        mUsbCfgBaseline[mUsbCfgBaselineCount++] = Handle;   // remember so we never double-count
++      }
++      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d Handle=%p -> NEW install (#%d)\n",
++              mUsbCfgNotifySeq, Handle, mUsbCfgNewCount));
++      UsbdPrintCoreFields ("NOTIFY", mUsbCfgNotifySeq, Handle);
+     }
+   }
++
++  DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d end (seenTotal=%d newTotal=%d)\n",
++          mUsbCfgNotifySeq, mUsbCfgSeenCount, mUsbCfgNewCount));
+ }
+ 
+ STATIC
+@@ -586,6 +684,12 @@ UsbDevArmConfigNotify (
+   EFI_STATUS  St;
+   VOID       *Registration = NULL;
+ 
++  //
++  // Snapshot what already exists BEFORE registering, so the first callback's
++  // re-walk of the whole protocol list cannot be mistaken for new installs.
++  //
++  UsbCfgBaselineSnapshot ();
++
+   St = gBS->CreateEvent (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, UsbCfgNotifyCallback, NULL, &mUsbCfgNotifyEvt);
+   if (EFI_ERROR (St)) {
+     DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] CreateEvent failed: %r\n", St));
+@@ -594,9 +698,9 @@ UsbDevArmConfigNotify (
+   St = gBS->RegisterProtocolNotify (&mUsbdUsbConfigGuid, mUsbCfgNotifyEvt, &Registration);
+   if (EFI_ERROR (St)) {
+     DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Register failed: %r\n", St));
+-  } else {
+-    DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] registered (passive, read-only)\n"));
++    return;
+   }
++  DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] registered (passive, read-only). NOTE: a handle installed between the baseline snapshot and this registration would be counted as NEW; that window is unavoidable from a DXE driver.\n"));
+ }
+ 
+ STATIC

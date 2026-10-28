@@ -1,0 +1,404 @@
+From dce8e52c28cf1ea947df7baf4881fce66426c3e7 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:54:15 +0800
+Subject: [PATCH 36/38] kebab: XNU-003b 'Reboot to bootloader' menu entry
+
+The platform has no way to request fastboot: EFI_RESETREASON_PROTOCOL only
+offers Get/Clear, and nothing implements a BCB. BootToBl.efi writes an
+Android bootloader control block ('bootonce-bootloader') into the misc
+partition, reads it back to prove it stuck, then does a cold reset so ABL
+comes up in fastboot.
+
+It is a normal UEFI application, exposed through the config volume as
+\EFI\UniXNU\Payloads\BLBOOT.EFI and listed as an 'efi' entry, so UniXNU
+itself is unchanged. The menu now reads:
+
+    Hello Payload / Reboot to bootloader / Restart / Power off /
+    Return to firmware
+---
+ Platforms/OnePlus/kebabPkg/kebab.dsc          |   1 +
+ .../Application/BootToBl/BootToBl.c           | 154 ++++++++++++++++++
+ .../Application/BootToBl/BootToBl.inf         |  34 ++++
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 524288 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12_dir.py      |   9 +-
+ 5 files changed, 197 insertions(+), 1 deletion(-)
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf
+
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.dsc b/Platforms/OnePlus/kebabPkg/kebab.dsc
+index 04a2c74a..4d7e74dc 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.dsc
++++ b/Platforms/OnePlus/kebabPkg/kebab.dsc
+@@ -86,6 +86,7 @@
+ [Components]
+   # Gate XNU-001a-2: RAM FAT test volume (self-contained BlockIo producer)
+   SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
++  SiliciumPkg/Application/BootToBl/BootToBl.inf
+   #
+   # ACPI Tables
+   #
+diff --git a/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c
+new file mode 100644
+index 00000000..3adfa076
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c
+@@ -0,0 +1,154 @@
++/** @file
++  XNU-003b: reboot into the Qualcomm bootloader (fastboot).
++
++  The platform exposes no reset-reason setter and no bootloader-mode service,
++  so this follows the Android convention: write a bootloader control block
++  with the "bootonce-bootloader" command into the misc partition and reset.
++  ABL consumes the command on the next boot and stays in fastboot.
++
++  Only the "command" field is written; the rest of the block is cleared.
++
++  Copyright (c) 2026. SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include <Uefi.h>
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DebugLib.h>
++#include <Library/DevicePathLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/PrintLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiLib.h>
++#include <Library/UefiRuntimeServicesTableLib.h>
++#include <Protocol/BlockIo.h>
++#include <Protocol/PartitionInfo.h>
++
++#define BCB_MAGIC_CMD  "bootonce-bootloader"
++
++#pragma pack (1)
++typedef struct {
++  CHAR8    Command[32];
++  CHAR8    Status[32];
++  CHAR8    Recovery[768];
++  CHAR8    Stage[32];
++  CHAR8    Reserved[1184];
++} BOOTLOADER_MESSAGE;
++#pragma pack ()
++
++STATIC
++EFI_STATUS
++FindMiscPartition (
++  OUT EFI_HANDLE             *Handle,
++  OUT EFI_BLOCK_IO_PROTOCOL **BlockIo
++  )
++{
++  EFI_STATUS                    Status;
++  EFI_HANDLE                   *Handles = NULL;
++  UINTN                         Count = 0;
++  UINTN                         Index;
++  EFI_PARTITION_INFO_PROTOCOL  *Info;
++
++  *Handle  = NULL;
++  *BlockIo = NULL;
++
++  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiPartitionInfoProtocolGuid, NULL, &Count, &Handles);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  for (Index = 0; Index < Count; Index++) {
++    Info = NULL;
++    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiPartitionInfoProtocolGuid, (VOID **)&Info)) ||
++        (Info == NULL))
++    {
++      continue;
++    }
++
++    if (Info->Type == PARTITION_TYPE_GPT) {
++      DEBUG ((DEBUG_ERROR, "[XNU-BL] partition %d: GPT \"%s\"\n", (UINT32)Index, Info->Info.Gpt.PartitionName));
++    }
++
++    if ((Info->Type != PARTITION_TYPE_GPT) ||
++        (CompareMem (Info->Info.Gpt.PartitionName, L"misc", sizeof (L"misc")) != 0))
++    {
++      continue;
++    }
++
++    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)BlockIo))) {
++      continue;
++    }
++
++    *Handle = Handles[Index];
++    break;
++  }
++
++  FreePool (Handles);
++  return (*Handle != NULL) ? EFI_SUCCESS : EFI_NOT_FOUND;
++}
++
++EFI_STATUS
++EFIAPI
++BootToBlEntry (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_STATUS             Status;
++  EFI_HANDLE             Handle = NULL;
++  EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
++  BOOTLOADER_MESSAGE     Bcb;
++
++  if (gST->ConOut != NULL) {
++    gST->ConOut->ClearScreen (gST->ConOut);
++  }
++
++  Print (L"XNU-BL: looking for the misc partition\n");
++  Status = FindMiscPartition (&Handle, &BlockIo);
++  Print (L"XNU-BL: misc = %r\n", Status);
++  if (EFI_ERROR (Status)) {
++    Print (L"XNU-BL: no misc partition, press any key\n");
++    gBS->Stall (10 * 1000 * 1000);
++    return EFI_NOT_FOUND;
++  }
++
++  if (BlockIo->Media->ReadOnly ||
++      (BlockIo->Media->BlockSize == 0) ||
++      (BlockIo->Media->BlockSize > 4096))
++  {
++    Print (L"XNU-BL: misc unusable (ro=%d blockSize=%d)\n",
++           BlockIo->Media->ReadOnly, (UINT32)BlockIo->Media->BlockSize);
++    gBS->Stall (10 * 1000 * 1000);
++    return EFI_DEVICE_ERROR;
++  }
++
++  ZeroMem (&Bcb, sizeof (Bcb));
++  CopyMem (Bcb.Command, BCB_MAGIC_CMD, sizeof (BCB_MAGIC_CMD));
++
++  Print (L"XNU-BL: writing BCB \"%a\" (%d bytes)\n", BCB_MAGIC_CMD, (UINT32)sizeof (Bcb));
++  Status = BlockIo->WriteBlocks (BlockIo, BlockIo->Media->MediaId, 0, sizeof (Bcb), &Bcb);
++  Print (L"XNU-BL: WriteBlocks = %r\n", Status);
++  if (EFI_ERROR (Status)) {
++    gBS->Stall (10 * 1000 * 1000);
++    return Status;
++  }
++
++  //
++  // Read it back so a failed flush is visible instead of silently rebooting
++  // into UEFI again.
++  //
++  ZeroMem (&Bcb, sizeof (Bcb));
++  Status = BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId, 0, sizeof (Bcb), &Bcb);
++  Print (L"XNU-BL: readback = %r command=\"%a\"\n", Status, Bcb.Command);
++  if (EFI_ERROR (Status) || (CompareMem (Bcb.Command, BCB_MAGIC_CMD, sizeof (BCB_MAGIC_CMD)) != 0)) {
++    Print (L"XNU-BL: BCB did not stick, aborting\n");
++    gBS->Stall (10 * 1000 * 1000);
++    return EFI_DEVICE_ERROR;
++  }
++
++  Print (L"XNU-BL: resetting into fastboot\n");
++  gBS->Stall (1000 * 1000);
++  gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
++
++  return EFI_SUCCESS;
++}
+diff --git a/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf
+new file mode 100644
+index 00000000..277dbdf9
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf
+@@ -0,0 +1,34 @@
++## @file
++#  XNU-003b: write an Android BCB ("bootonce-bootloader") into misc and reset,
++#  so the next boot lands in the Qualcomm bootloader (fastboot).
++##
++[Defines]
++  INF_VERSION    = 0x00010005
++  BASE_NAME      = BootToBl
++  FILE_GUID      = 6C2E9A51-3B7D-42E8-9A15-C4D2F80B7E63
++  MODULE_TYPE    = UEFI_APPLICATION
++  VERSION_STRING = 1.0
++  ENTRY_POINT    = BootToBlEntry
++
++[Sources]
++  BootToBl.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++
++[LibraryClasses]
++  UefiApplicationEntryPoint
++  UefiBootServicesTableLib
++  UefiRuntimeServicesTableLib
++  UefiLib
++  DebugLib
++  BaseLib
++  BaseMemoryLib
++  MemoryAllocationLib
++  PrintLib
++  DevicePathLib
++
++[Protocols]
++  gEfiBlockIoProtocolGuid
++  gEfiPartitionInfoProtocolGuid
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index 87789602cbdf339374cb43628f829a0a09763f89..b0e95e5e79c1bd3b1b9e3f7409f119065ee45aac 100644
+GIT binary patch
+delta 11778
+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
+RwC8BZo}-~ZJ{mUp{{c>D(VGAO
+
+delta 125
+zcmZo@P-tjS*dWQo^#A{6N4BSolUO9-Og1ZKL52dL@P6ru0W6c?+{5gfv}`ySdp6q|
+zJ!aqR%=UnNlGB>aLeB5lCI+M}@(O7B)b@$7?GsbmC+4<KEN!1y+di>v4q)3LjY517
+F0sv)ZFdqN_
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+index 09adc316..f6dd84f2 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -242,6 +242,7 @@ def selftest(path):
+ if __name__ == "__main__":
+     out = sys.argv[1]
+     payload = open(sys.argv[2], "rb").read()
++    blboot = open(sys.argv[3], "rb").read()
+     toml = b"""version = 1
+ 
+ [boot]
+@@ -255,6 +256,12 @@ type = "efi"
+ path = "Payloads/HELLO.EFI"
+ args = "pause"
+ 
++[[entry]]
++id = "bootloader"
++title = "Reboot to bootloader"
++type = "efi"
++path = "Payloads/BLBOOT.EFI"
++
+ [[entry]]
+ id = "reboot"
+ title = "Restart"
+@@ -274,7 +281,7 @@ type = "action"
+ action = "exit"
+ """
+     tree = {
+-        "EFI": {"UniXNU": {"unixnu.toml": toml, "Payloads": {"HELLO.EFI": payload}}},
++        "EFI": {"UniXNU": {"unixnu.toml": toml, "Payloads": {"HELLO.EFI": payload, "BLBOOT.EFI": blboot}}},
+         "XNU-TEST.TXT": (
+             b"XNU-000 RAM FAT probe file.\n"
+             b"Generated for the OnePlus 8T kebab UEFI bring-up.\n"

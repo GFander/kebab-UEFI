@@ -1,0 +1,25 @@
+## @file
+#  Kebab firmware log reservation driver.
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = KebabFwLogDxe
+  FILE_GUID                      = 8b2f4c61-7d3e-4a59-9c80-2f6d1e5b7a93
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = KebabFwLogDxeEntry
+
+[Sources]
+  KebabFwLogDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  Silicon/Silicium/SiliciumPkg/SiliciumPkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DebugLib
+
+[Depex]
+  TRUE

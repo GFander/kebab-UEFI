@@ -1,0 +1,64 @@
+From dfcdf576537c6f929fd6e4dc0564670d6bc2a336 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:45:11 +0800
+Subject: [PATCH 33/38] kebab: XNU-003 FIX directory clusters were left marked
+ free
+
+Two volume bugs, both found from the device log.
+
+1) Directory clusters never got a FAT entry, so they read as 0x000 (free)
+   and FatPkg could not descend into EFI/UNIXNU. Every directory is a
+   single cluster and is now marked 0xFFF.
+
+2) XNU-TEST.TXT was written with 15 bytes ('XNU RAM FAT OK') while the
+   driver compares against the 112-byte probe text, so HashMatch was 0
+   even though the read succeeded.
+
+With both fixed the probe matches again and UniXNU has a readable
+\EFI\UniXNU\unixnu.toml.
+---
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 524288 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12_dir.py      |  10 +++++++++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index 0002f0bd64250756a9d71c31598601fc8e79f8b6..76185a2045b83935334de2c72f1f24e364b24505 100644
+GIT binary patch
+delta 512
+zcmZo@P-tjS*uc!h_8$y3b29y6gtJ+UnHUQ;JF@MUo*2L~iOmMgIn2IEi@6|I*TBF)
+zA;{5J!Oby5p`a)~DODjYGbdG#%RMzOwJ5P9HANvUzeu4ZBUQmaFEt>iv{=C+L?Jsh
+zDKSYQ)YZ*XA*m=cFI~5^K#waVBeNK+Spi5Fr6#86=I7;9DwL!amnftpmL%$Nf!(k<
+PfNg{HC_%+AILHM6R~@@E
+
+delta 415
+zcmZo@P-tjS*uc!h#sCJJIhlSj!r3gwOpN@S9ohCvPYht0#AXBL9A@97#azIn5aj5q
+a;N}>j;P1@^R<b#OZG-eELB%jo;syW-CXB%V
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+index 1dc272db..57600b32 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -102,6 +102,10 @@ def build(tree, out_path):
+     file_cluster = {}
+     fat = [0] * (DATA_CLUSTERS + 2)
+     fat[0], fat[1] = 0xFF0, 0xFFF
++    # Every directory occupies exactly one cluster and must be marked EOC,
++    # otherwise FatPkg sees a free cluster and cannot read its contents.
++    for d in dirs:
++        fat[dir_cluster[d]] = 0xFFF
+     for p, data in files:
+         n = max(1, (len(data) + CLUSTER - 1) // CLUSTER)
+         file_cluster[p] = nxt
+@@ -258,7 +262,11 @@ action = "exit"
+ """
+     tree = {
+         "EFI": {"UniXNU": {"unixnu.toml": toml, "Payloads": {"HELLO.EFI": payload}}},
+-        "XNU-TEST.TXT": b"XNU RAM FAT OK\n",
++        "XNU-TEST.TXT": (
++            b"XNU-000 RAM FAT probe file.\n"
++            b"Generated for the OnePlus 8T kebab UEFI bring-up.\n"
++            b"This file is read-only test data.\n"
++        ),
+     }
+     n = build(tree, out)
+     print(f"wrote {out} ({n} bytes)")

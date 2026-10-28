@@ -1,0 +1,17 @@
+From e9ab596094bef86cef7616d27e8cbb328a0363a0 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 16:58:05 +0800
+Subject: [PATCH 08/38] kebab: Gate-2C-A9 pin Binaries with USB Config rollback
+ candidate
+
+---
+ Binaries | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Binaries b/Binaries
+index a1501e0c..6a86d715 160000
+--- a/Binaries
++++ b/Binaries
+@@ -1 +1 @@
+-Subproject commit a1501e0c2e642d6ac0d8f52c85af2a67b75a7799
++Subproject commit 6a86d7152ef65d1e67cd893e5cc5e009c27d5b7d

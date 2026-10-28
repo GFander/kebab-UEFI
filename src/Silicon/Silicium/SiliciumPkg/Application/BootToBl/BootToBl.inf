@@ -1,0 +1,33 @@
+## @file
+#  XNU-003b: write an Android BCB ("bootonce-bootloader") into misc and reset,
+#  so the next boot lands in the Qualcomm bootloader (fastboot).
+##
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = BootToBl
+  FILE_GUID      = 6C2E9A51-3B7D-42E8-9A15-C4D2F80B7E63
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = BootToBlEntry
+
+[Sources]
+  BootToBl.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  UefiLib
+  DebugLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  PrintLib
+  DevicePathLib
+
+[Protocols]
+  gEfiBlockIoProtocolGuid

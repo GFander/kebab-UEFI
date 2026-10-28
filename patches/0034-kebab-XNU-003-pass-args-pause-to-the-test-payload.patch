@@ -1,0 +1,38 @@
+From 0bb6981b265ef994f5d3227b38c3dd9d1eb5dd0e Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:49:20 +0800
+Subject: [PATCH 34/38] kebab: XNU-003 pass args="pause" to the test payload
+
+The payload ran but printed and returned immediately, so UniXNU repainted
+the menu before anything could be read. HelloPayload already accepts a
+'pause' load option that stalls 15 s after printing its report, so the
+config now passes args = "pause" and UniXNU hands it over as
+Loaded->LoadOptions (Boot.c:195).
+---
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 524288 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12_dir.py      |   1 +
+ 2 files changed, 1 insertion(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index 76185a2045b83935334de2c72f1f24e364b24505..55c4f3ca0b5c4105d6b8bf0252a8d3d01faf0446 100644
+GIT binary patch
+delta 63
+zcmZo@P-tjS*kEJC_;$0ck-q?MVo`drf~|s5L1Jlf>SRMF;mvcMLfD(U+PoOsyqMa&
+TnA^Nq+PqlXyx5j`v2Ozat_T#l
+
+delta 52
+zcmZo@P-tjS*kEJCcyF_<k-xxXV<*AQYn(#ZCkF60d9`^lws|qNc`>(nv9x)ywt2BF
+I^J3oy0No=IG5`Po
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+index 57600b32..287f9ec8 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -253,6 +253,7 @@ id = "hello"
+ title = "Hello Payload"
+ type = "efi"
+ path = "Payloads/HELLO.EFI"
++args = "pause"
+ 
+ [[entry]]
+ id = "fw"

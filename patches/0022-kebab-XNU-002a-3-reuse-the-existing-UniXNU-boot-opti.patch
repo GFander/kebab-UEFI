@@ -1,0 +1,76 @@
+From 502b422a2c0c7ccb0eb648252a62f08efaa63cdf Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 23:03:29 +0800
+Subject: [PATCH 22/38] kebab: XNU-002a-3 reuse the existing UniXNU boot option
+
+The first version picked the first free number in 0x9800..0x98FF on every
+boot, so each boot would have created an additional Boot#### and the list
+would grow without bound.
+
+Now the range is scanned for an option whose Description is L"UniXNU";
+that number is reused (the variable content is refreshed in place), and a
+free number is only taken when no such option exists.
+---
+ .../Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c | 41 +++++++++++++++++--
+ 1 file changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
+index ed902a79..a800c413 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
+@@ -239,18 +239,51 @@ XnuBootEntryReadyToBoot (
+   CopyMem (Option + sizeof (UINT32) + sizeof (UINT16) + sizeof (mDesc), Dp, DpSize);
+   CopyMem (Option + sizeof (UINT32) + sizeof (UINT16) + sizeof (mDesc) + DpSize, mOptional, sizeof (mOptional));
+ 
+-  for (Number = 0x9800; Number < 0x9900; Number++) {
+-    UnicodeSPrint (Name, sizeof (Name), L"Boot%04x", Number);
+-    St = gRT->GetVariable (Name, &gEfiGlobalVariableGuid, NULL, NULL, NULL);
++  //
++  // Reuse an option that already carries our description, otherwise take the
++  // first free number in the private range.  Without this, every boot would
++  // create a new Boot#### and the list would grow without bound.
++  //
++  Number = 0xFFFF;
++  for (UINT16 N = 0x9800; N < 0x9900; N++) {
++    UINTN  VarSize = 0;
++    UINT8 *Var = NULL;
++    BOOLEAN Ours = FALSE;
++
++    UnicodeSPrint (Name, sizeof (Name), L"Boot%04x", N);
++    St = gRT->GetVariable (Name, &gEfiGlobalVariableGuid, NULL, &VarSize, NULL);
+     if (St == EFI_NOT_FOUND) {
++      if (Number == 0xFFFF) {
++        Number = N;                    // remember the first free slot
++      }
++      continue;
++    }
++    if ((St != EFI_BUFFER_TOO_SMALL) || (VarSize < 8)) {
++      continue;
++    }
++    Var = AllocatePool (VarSize);
++    if (Var == NULL) {
++      continue;
++    }
++    if (!EFI_ERROR (gRT->GetVariable (Name, &gEfiGlobalVariableGuid, NULL, &VarSize, Var))) {
++      if (((UINT16)StrSize (mDesc) + 8) <= VarSize) {
++        if (StrCmp ((CHAR16 *)(Var + 6), mDesc) == 0) {
++          Ours = TRUE;
++        }
++      }
++    }
++    FreePool (Var);
++    if (Ours) {
++      Number = N;                      // reuse, do not duplicate
+       break;
+     }
+   }
+-  if (Number >= 0x9900) {
++  if (Number == 0xFFFF) {
+     FreePool (Option);
+     FreePool (Dp);
+     return;
+   }
++  UnicodeSPrint (Name, sizeof (Name), L"Boot%04x", Number);
+ 
+   St = gRT->SetVariable (Name, &gEfiGlobalVariableGuid,
+                          EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,

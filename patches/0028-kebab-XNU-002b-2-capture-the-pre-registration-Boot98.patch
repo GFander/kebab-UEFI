@@ -1,0 +1,45 @@
+From 73ee080e8b2f5c0806183bb92e59f96e7b94662c Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:03:13 +0800
+Subject: [PATCH 28/38] kebab: XNU-002b-2 capture the pre-registration Boot9800
+ state
+
+Registering first and dumping after only shows the variable we just wrote,
+so it cannot tell a surviving variable apart from one that never
+persisted. The trace now records, in this order:
+
+  BootOrder (before register) + Boot9800 dump   <- state inherited from the
+                                                   previous boot
+  XnuRegisterUniXNU ()
+  BootOrder (after register)  + Boot9800 dump   <- what we wrote
+  XnuProbeParse ()                              <- VariableToLoadOption +
+                                                   GetLoadOptions survival
+
+With BootOrderBefore=4 on every boot this single flash answers both open
+questions: did the variable survive at all, and does BDS reject it.
+---
+ .../SiliciumPkg/Library/BootManagerLib/BootManager.c     | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index 894d1bd5..c5c2580b 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -593,8 +593,17 @@ PlatformBootManagerAfterConsole ()
+   // Execute Secondary After Console
+   DeviceBootManagerAfterConsole ();
+ 
++  //
++  // XNU-002b-2 trace: capture the state BEFORE we (re)write anything, so a
++  // surviving variable from the previous boot can be told apart from one
++  // that never persisted.
++  //
++  XnuTraceOrderNums ("before register");
++  XnuDumpBootEntry (0x9800);
++
+   // XNU-002a-4: append the UniXNU boot option (no-op if absent)
+   XnuRegisterUniXNU ();
++
+   XnuTraceOrderNums ("after register");
+   XnuDumpBootEntry (0x9800);
+   XnuProbeParse ();

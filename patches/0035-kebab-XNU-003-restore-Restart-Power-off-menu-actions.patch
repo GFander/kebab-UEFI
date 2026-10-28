@@ -1,0 +1,52 @@
+From d1d571de403ce5856f4e6dd9284ab8ca4d6b7dee Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:51:18 +0800
+Subject: [PATCH 35/38] kebab: XNU-003 restore Restart / Power off menu actions
+
+The config volume replaces UniXNU's built-in configuration, so the three
+actions it ships with disappeared once unixnu.toml was loaded. The toml
+now lists them explicitly:
+
+    hello / Restart(reset) / Power off(shutdown) / Return to firmware(exit)
+
+Config.c:1135-1147 accepts exactly reset, shutdown and exit.
+---
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 524288 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12_dir.py      |  12 ++++++++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index 55c4f3ca0b5c4105d6b8bf0252a8d3d01faf0446..87789602cbdf339374cb43628f829a0a09763f89 100644
+GIT binary patch
+delta 131
+zcmZo@P-tjS*kEJC)Wf*h&L~enq9`>fKfgqYt0c1|Csn~#K`AJ;xFoTtWb$bz8P=lI
+z;?$DKhEBpV1^MNvMfquIND2c$LJB}JkW!A~jM9>n{PH}I>dkAMwz4&OwRthNc`>zl
+TF}HcKw0W_%d9f|?V&4V;nQ|=s
+
+delta 49
+zcmZo@P-tjS*kEJC^p;_>ol%~^W^d=MY!d_KH+i*rF}8UzwRthOd9k#4v9@`!E%RdE
+F1^~Ct5ZM3#
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+index 287f9ec8..09adc316 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -255,6 +255,18 @@ type = "efi"
+ path = "Payloads/HELLO.EFI"
+ args = "pause"
+ 
++[[entry]]
++id = "reboot"
++title = "Restart"
++type = "action"
++action = "reset"
++
++[[entry]]
++id = "poweroff"
++title = "Power off"
++type = "action"
++action = "shutdown"
++
+ [[entry]]
+ id = "fw"
+ title = "Return to firmware"

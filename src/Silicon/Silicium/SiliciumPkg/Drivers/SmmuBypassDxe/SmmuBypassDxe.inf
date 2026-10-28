@@ -1,0 +1,25 @@
+## @file
+#  XNU-004: switch the UFS SMMU streams to BYPASS before UFSDxe runs.
+##
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = SmmuBypassDxe
+  FILE_GUID      = 3A9C41D7-5B62-4E08-8C75-2D1F6B0A9E54
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = SmmuBypassEntry
+
+[Sources]
+  SmmuBypassDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DebugLib
+  BaseLib
+
+[Depex]
+  TRUE

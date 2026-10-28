@@ -1,0 +1,99 @@
+From e5c6491bb41688d590f6e29a826d87e16fe20b2a Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:01:16 +0800
+Subject: [PATCH 27/38] kebab: XNU-002b-2 add the decisive Boot9800 parse probe
+
+Zero-flash observation on the running A4B image: every boot reports
+BootOrderBefore=4 -> After=5, i.e. the Boot9800 written on the previous
+boot is already gone by the next one. Combined with BmLoadOption.c:1165
+(GetLoadOptions deletes a Boot#### whose VariableToLoadOption fails), the
+option is being rejected and removed.
+
+The encoding looks correct on paper (BmValidateOption sizes and
+BmGetDevicePathSizeEx both pass for a 20-byte PIWG node + END), so the
+build now records the ground truth:
+
+  [XNU-PROBE] VariableToLoadOption(Boot9800) = <status>
+  [XNU-PROBE]   num=.. attr=.. desc=".." dpSize=.. optData=..
+  [XNU-PROBE] GetLoadOptions -> N entries
+  [XNU-PROBE]   0x9800 survived GetLoadOptions = 0/1
+  [XNU-DUMP] BootOrder before/after  (numbers)
+
+GetLoadOptions is called once, on purpose, to reproduce the deletion in a
+controlled place; everything else stays read-only.
+---
+ .../Library/BootManagerLib/BootManager.c      | 47 +++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index 392fd7eb..894d1bd5 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -18,6 +18,7 @@
+ #include <Library/BootGraphicsLib.h>
+ #include <Library/BootGraphics.h>
+ #include <Library/PrintLib.h>
++#include <Library/UefiBootManagerLib.h>
+ #include <Library/BaseLib.h>
+ #include <Library/BaseMemoryLib.h>
+ #include <Library/DevicePathLib.h>
+@@ -432,6 +433,51 @@ XnuDumpBootEntry (
+   FreePool (Var);
+ }
+ 
++
++STATIC
++VOID
++XnuProbeParse (
++  VOID
++  )
++{
++  EFI_STATUS                     Status;
++  EFI_BOOT_MANAGER_LOAD_OPTION   Opt;
++  EFI_BOOT_MANAGER_LOAD_OPTION  *List = NULL;
++  UINTN                          Count = 0;
++  BOOLEAN                        Has = FALSE;
++
++  ZeroMem (&Opt, sizeof (Opt));
++  Status = EfiBootManagerVariableToLoadOption (L"Boot9800", &Opt);
++  DEBUG ((EFI_D_ERROR, "[XNU-PROBE] VariableToLoadOption(Boot9800) = %r\n", Status));
++  if (!EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "[XNU-PROBE]   num=%04x attr=0x%08x desc=\"%S\"\n",
++            (UINT32)Opt.OptionNumber, Opt.Attributes, Opt.Description));
++    DEBUG ((EFI_D_ERROR, "[XNU-PROBE]   dpSize=%d optData=%d\n",
++            (UINT32)GetDevicePathSize (Opt.FilePath), (UINT32)Opt.OptionalDataSize));
++    EfiBootManagerFreeLoadOption (&Opt);
++  }
++
++  //
++  // Controlled reproduction of what the menu does: this call deletes any
++  // option that fails to parse.  Dump the order before and after.
++  //
++  XnuTraceOrderNums ("before GetLoadOptions probe");
++  List = EfiBootManagerGetLoadOptions (&Count, LoadOptionTypeBoot);
++  DEBUG ((EFI_D_ERROR, "[XNU-PROBE] GetLoadOptions -> %d entries (status %r)\n", (UINT32)Count, (List == NULL) ? EFI_NOT_FOUND : EFI_SUCCESS));
++  for (UINTN i = 0; i < Count; i++) {
++    DEBUG ((EFI_D_ERROR, "[XNU-PROBE]   [%d] num=%04x attr=0x%08x desc=\"%S\"\n",
++            (UINT32)i, (UINT32)List[i].OptionNumber, List[i].Attributes, List[i].Description));
++    if (List[i].OptionNumber == 0x9800) {
++      Has = TRUE;
++    }
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-PROBE] 0x9800 survived GetLoadOptions = %d\n", Has ? 1 : 0));
++  if (List != NULL) {
++    EfiBootManagerFreeLoadOptions (List, Count);
++  }
++  XnuTraceOrderNums ("after GetLoadOptions probe");
++}
++
+ STATIC
+ VOID
+ XnuRegisterUniXNU (
+@@ -551,6 +597,7 @@ PlatformBootManagerAfterConsole ()
+   XnuRegisterUniXNU ();
+   XnuTraceOrderNums ("after register");
+   XnuDumpBootEntry (0x9800);
++  XnuProbeParse ();
+   // Probe the exact predicate BDS will apply, without changing state.
+   {
+     EFI_STATUS St2; UINTN Sz2 = 0; UINT8 *V2 = NULL; UINT16 PL2;

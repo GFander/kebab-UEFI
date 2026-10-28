@@ -1,0 +1,584 @@
+From e7b909b893ee80804a2ceffd027dfdd57d47295b Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:35:53 +0800
+Subject: [PATCH 31/38] kebab: XNU-003 config volume with
+ \EFI\UniXNU\unixnu.toml
+
+The RAM disk only carried XNU-TEST.TXT, so UniXNU fell back to its
+built-in configuration and reported 'No boot entry found'.
+
+mkfat12_dir.py writes a FAT12 volume with real subdirectories and LFN
+entries (unixnu.toml needs a long name - 'toml' does not fit 8.3):
+    /EFI/UniXNU/unixnu.toml          version = 1, [boot] timeout=30,
+                                     default='hello', one efi entry and one
+                                     action entry
+    /EFI/UniXNU/Payloads/HELLO.EFI   prebuilt HelloPayload.efi
+    /XNU-TEST.TXT                    kept for the XnuRamDiskDxe self-test
+
+kebab.fdf now embeds XnuConfigFat12.img in place of XnuTestFat12.img.
+---
+ Platforms/OnePlus/kebabPkg/kebab.fdf          |   2 +-
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 0 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12_dir.py      | 265 ++++++++++++++++++
+ 3 files changed, 266 insertions(+), 1 deletion(-)
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.fdf b/Platforms/OnePlus/kebabPkg/kebab.fdf
+index 9204dfc0..5fbb06be 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.fdf
++++ b/Platforms/OnePlus/kebabPkg/kebab.fdf
+@@ -86,7 +86,7 @@ READ_LOCK_STATUS   = TRUE
+   # Gate XNU-001a-2: RAM FAT test volume
+   INF SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
+   FILE FREEFORM = 7B1C2A44-5E3D-4F6A-9C11-8E2D4F6A1B23 {
+-    SECTION RAW = Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuTestFat12.img
++    SECTION RAW = Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+   }
+ 
+   # XNU-002a: UniXNU boot manager (prebuilt, official sources)
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+new file mode 100644
+index 0000000000000000000000000000000000000000..d6e33f72268e2890aaea54d22b68c71d79d970c2
+GIT binary patch
+literal 524288
+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
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+v5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmdXN-va*^1+Mye
+
+literal 0
+HcmV?d00001
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+new file mode 100644
+index 00000000..e2e12f3c
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -0,0 +1,265 @@
++#!/usr/bin/env python3
++"""Build a FAT12 image with subdirectories and long file names (XNU-003).
++
++Two passes: allocate every directory and file cluster first, then emit the
++directory entries and the file payloads.  Simple enough to verify by eye.
++"""
++
++import struct
++import sys
++
++SECTOR = 512
++SPC = 4
++CLUSTER = SECTOR * SPC
++RESERVED = 1
++NUM_FATS = 2
++ROOT_ENTRIES = 224
++TOTAL_SECTORS = 1024
++ROOT_SECTORS = (ROOT_ENTRIES * 32 + SECTOR - 1) // SECTOR
++DATA_START = RESERVED + NUM_FATS + ROOT_SECTORS
++DATA_CLUSTERS = (TOTAL_SECTORS - DATA_START) // SPC
++
++ATTR_DIR = 0x10
++ATTR_ARC = 0x20
++
++
++def short_name(name):
++    up = name.upper()
++    base, _, ext = up.rpartition(".")
++    if not base:
++        base, ext = up, ""
++    ok = 1 <= len(base) <= 8 and len(ext) <= 3 and all(
++        c.isalnum() or c in "$%'-_@~`!(){}^#&" for c in base + ext)
++    if ok:
++        return (base.ljust(8) + ext.ljust(3)).encode("ascii"), False
++    stem = "".join(c for c in base if c.isalnum())[:6] or "FILE"
++    return (f"{stem}~1".ljust(8) + ext[:3].ljust(3)).encode("ascii"), True
++
++
++def lfn_checksum(short):
++    s = 0
++    for b in short:
++        s = (((s & 1) << 7) + (s >> 1) + b) & 0xFF
++    return s
++
++
++def lfn_slots(name, short):
++    raw = name.encode("utf-16-le")
++    units = [raw[i:i + 2] for i in range(0, len(raw), 2)]
++    chunks = [units[i:i + 13] for i in range(0, len(units), 13)]
++    if len(chunks[-1]) < 13:
++        chunks[-1] = chunks[-1] + [b"\x00\x00"] + [b"\xff\xff"] * (13 - len(chunks[-1]) - 1)
++    csum = lfn_checksum(short)
++    out = []
++    for idx in range(len(chunks) - 1, -1, -1):
++        blob = b"".join(chunks[idx])
++        e = bytearray(32)
++        e[0] = (idx + 1) | (0x40 if idx == len(chunks) - 1 else 0)
++        e[1:11] = blob[0:10]
++        e[11] = 0x0F
++        e[13] = csum
++        e[14:26] = blob[10:22]
++        e[28:32] = blob[22:26]
++        out.append(bytes(e))
++    return out
++
++
++def entry(short, attr, cluster, size):
++    e = bytearray(32)
++    e[0:11] = short
++    e[11] = attr
++    struct.pack_into("<H", e, 26, cluster & 0xFFFF)
++    struct.pack_into("<I", e, 28, size)
++    return bytes(e)
++
++
++def build(tree, out_path):
++    # ---- collect ----
++    dirs = ["/"]
++    files = []          # (path, data)
++    order = []          # directory listing order: (dirpath, [child names])
++
++    def walk(node, prefix):
++        names = []
++        for name, val in node.items():
++            p = f"{prefix}/{name}" if prefix != "/" else f"/{name}"
++            names.append((name, p, isinstance(val, dict)))
++            if isinstance(val, dict):
++                dirs.append(p)
++                walk(val, p)
++            else:
++                files.append((p, val))
++        order.append((prefix, names))
++
++    walk(tree, "/")
++
++    # ---- allocate ----
++    nxt = 2
++    dir_cluster = {}
++    for d in dirs:
++        dir_cluster[d] = nxt
++        nxt += 1
++    file_cluster = {}
++    fat = [0] * (DATA_CLUSTERS + 2)
++    fat[0], fat[1] = 0xFF0, 0xFFF
++    for p, data in files:
++        n = max(1, (len(data) + CLUSTER - 1) // CLUSTER)
++        file_cluster[p] = nxt
++        for i in range(n):
++            fat[nxt + i] = nxt + i + 1 if i < n - 1 else 0xFFF
++        nxt += n
++
++    def parent_of(p):
++        return p.rsplit("/", 1)[0] or "/"
++
++    # ---- emit directories ----
++    data = bytearray(DATA_CLUSTERS * CLUSTER)
++
++    def put_dir(dirpath):
++        slots = []
++        for name, p, is_dir in next(n for n in order if n[0] == dirpath)[1]:
++            short, needs = short_name(name)
++            if needs:
++                slots += lfn_slots(name, short)
++            if is_dir:
++                slots.append(entry(short, ATTR_DIR, dir_cluster[p], 0))
++            else:
++                payload = dict(files)[p]
++                slots.append(entry(short, ATTR_ARC, file_cluster[p], len(payload)))
++        slots.append(b"\x00" * 32)
++        blob = b"".join(slots)
++        assert len(blob) <= CLUSTER, f"{dirpath} too large"
++        off = (dir_cluster[dirpath] - 2) * CLUSTER
++        data[off:off + len(blob)] = blob
++
++    for d in dirs:
++        put_dir(d if d != "/" else "/")
++
++    # root special-case: dirs list has "/" and children
++    for p, payload in files:
++        off = (file_cluster[p] - 2) * CLUSTER
++        data[off:off + len(payload)] = payload
++
++    # ---- assemble ----
++    img = bytearray(TOTAL_SECTORS * SECTOR)
++    bs = bytearray(SECTOR)
++    bs[0:3] = b"\xEB\x3C\x90"
++    bs[3:11] = b"MSWIN4.1"
++    struct.pack_into("<H", bs, 11, SECTOR)
++    bs[13] = SPC
++    struct.pack_into("<H", bs, 14, RESERVED)
++    bs[16] = NUM_FATS
++    struct.pack_into("<H", bs, 17, ROOT_ENTRIES)
++    struct.pack_into("<H", bs, 19, TOTAL_SECTORS)
++    bs[21] = 0xF8
++    struct.pack_into("<H", bs, 24, 1)
++    struct.pack_into("<H", bs, 26, 1)
++    bs[36] = 0x80
++    bs[38] = 0x29
++    struct.pack_into("<I", bs, 39, 0x584E5503)
++    bs[43:54] = b"UNIXNU     "
++    bs[54:62] = b"FAT12   "
++    bs[510:512] = b"\x55\xAA"
++    img[0:SECTOR] = bs
++
++    fatb = bytearray(SECTOR)
++    for i in range(len(fat)):
++        if i % 2 == 0:
++            fatb[i * 3 // 2] = fat[i] & 0xFF
++            fatb[i * 3 // 2 + 1] = (fatb[i * 3 // 2 + 1] & 0xF0) | ((fat[i] >> 8) & 0x0F)
++        else:
++            fatb[i * 3 // 2] = (fatb[i * 3 // 2] & 0x0F) | ((fat[i] & 0x0F) << 4)
++            fatb[i * 3 // 2 + 1] = (fat[i] >> 4) & 0xFF
++    img[SECTOR:2 * SECTOR] = fatb[:SECTOR]
++    img[2 * SECTOR:3 * SECTOR] = fatb[:SECTOR]
++
++    root = bytearray()
++    for name, p, is_dir in next(n for n in order if n[0] == "/")[1]:
++        short, needs = short_name(name)
++        if needs:
++            root += b"".join(lfn_slots(name, short))
++        if is_dir:
++            root += entry(short, ATTR_DIR, dir_cluster[p], 0)
++        else:
++            root += entry(short, ATTR_ARC, file_cluster[p], len(dict(files)[p]))
++    root += b"\x00" * 32
++    roff = (RESERVED + NUM_FATS) * SECTOR
++    img[roff:roff + len(root)] = root
++
++    doff = DATA_START * SECTOR
++    img[doff:doff + len(data)] = data
++    assert len(img) == TOTAL_SECTORS * SECTOR
++    open(out_path, "wb").write(img)
++    return len(img)
++
++
++def selftest(path):
++    img = open(path, "rb").read()
++    rsv = struct.unpack_from("<H", img, 14)[0]
++    nf = img[16]
++    rootn = struct.unpack_from("<H", img, 17)[0]
++    spc = img[13]
++    doff = (rsv + nf + rootn * 32 // SECTOR) * SECTOR
++    lines = []
++
++    def walk(off, depth):
++        lfn = []
++        while True:
++            e = img[off:off + 32]
++            off += 32
++            if len(e) < 32 or e[0] == 0:
++                return
++            if e[0] == 0xE5:
++                continue
++            if e[11] == 0x0F:
++                lfn.append(e)
++                continue
++            base = e[0:8].decode("ascii", "replace").rstrip()
++            ext = e[8:11].decode("ascii", "replace").rstrip()
++            name = base + ("." + ext if ext else "")
++            long = ""
++            if lfn:
++                units = []
++                for x in reversed(lfn):
++                    units += [x[1:11], x[14:26], x[28:32]]
++                long = b"".join(units).decode("utf-16-le", "ignore").split("\x00")[0]
++            cl = struct.unpack_from("<H", e, 26)[0]
++            sz = struct.unpack_from("<I", e, 28)[0]
++            lines.append("  " * depth + f"{long or name:22} attr=0x{e[11]:02x} cl={cl} size={sz}")
++            lfn = []
++            if e[11] & ATTR_DIR and cl >= 2:
++                walk(doff + (cl - 2) * spc * SECTOR, depth + 1)
++
++    walk((rsv + nf) * SECTOR, 0)
++    return lines
++
++
++if __name__ == "__main__":
++    out = sys.argv[1]
++    payload = open(sys.argv[2], "rb").read()
++    toml = b"""version = 1
++
++[boot]
++timeout = 30
++default = "hello"
++
++[[entry]]
++id = "hello"
++title = "Hello Payload"
++type = "efi"
++path = "Payloads/HELLO.EFI"
++
++[[entry]]
++id = "fw"
++title = "Return to firmware"
++type = "action"
++action = "exit"
++"""
++    tree = {
++        "EFI": {"UniXNU": {"unixnu.toml": toml, "Payloads": {"HELLO.EFI": payload}}},
++        "XNU-TEST.TXT": b"XNU RAM FAT OK\n",
++    }
++    n = build(tree, out)
++    print(f"wrote {out} ({n} bytes)")
++    for line in selftest(out):
++        print(line)

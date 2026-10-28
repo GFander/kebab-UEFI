@@ -1,0 +1,209 @@
+From d07de6a24dd05f37051e58137c92eefb6bff0994 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 19:25:14 +0800
+Subject: [PATCH 13/38] kebab: Gate-2C-A12 read-only runtime probe for USB
+ function state
+
+Strictly observational; no vendor method is ever invoked.
+
+- [USBPROBE]  LocateProtocol(USBFN_IO) status, Revision, handle count
+- [MSDPROBE]  LocateProtocol(MSD) status, Revision, magic 'usbm',
+              and the private state byte at Ifc + 0x6B0
+              (private Base + 0x6B8; never +0x6B8 off the public pointer)
+- [USBDEVICE] UsbDeviceDxe identity via LoadedImage FilePath FV FILE_GUID,
+              ImageBase/ImageSize, and the private global at ImageBase+0xA3D0
+              read only after a strict range check
+
+Every private access is gated on: non-NULL, 8-byte alignment, matching
+Revision and magic, and image-range validation; otherwise UNKNOWN is printed
+and dereference is skipped.
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 161 ++++++++++++++++++
+ 1 file changed, 161 insertions(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index 61ad3bc3..d355361e 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -725,6 +725,163 @@ UsbDevArmConfigNotify (
+   DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] registered (passive, read-only). NOTE: a handle installed between the baseline snapshot and this registration would be counted as NEW; that window is unavoidable from a DXE driver.\n"));
+ }
+ 
++//
++// Gate-2C-A12: strictly read-only runtime probe.
++//   - LocateProtocol / LocateHandleBuffer / memory reads only
++//   - NO vtable calls (no StartDevice, StartController, ConfigureEnableEndpoints)
++//   - NO BlockIo, NO ConnectController, NO new notify cursors or timers
++//
++STATIC EFI_GUID mUsbdUsbFnIoGuid = { 0x32D2963A, 0xFE5D, 0x4F30, { 0xB6, 0x33, 0x6E, 0x5D, 0xC5, 0x58, 0x03, 0xCC }};
++STATIC EFI_GUID mUsbdMsdGuid     = { 0xC8591FAF, 0xDBCC, 0x479E, { 0x9E, 0xF2, 0xFD, 0x08, 0x5B, 0xC3, 0x7B, 0xC7 }};
++STATIC EFI_GUID mUsbdUsbDevGuid  = { 0x3299A266, 0x15F0, 0x4346, { 0x83, 0x18, 0x71, 0x63, 0x36, 0x73, 0x6D, 0x3E }};
++
++#define USBD_USBDEV_ACTIVATION_RVA  0xA3D0
++
++STATIC
++VOID
++UsbDevProbeProtocols (
++  IN CONST CHAR8 *Tag
++  )
++{
++  EFI_STATUS  St;
++  VOID       *Ifc;
++  EFI_HANDLE *Handles;
++  UINTN       Count;
++  UINT32      Rev;
++  UINT32      Magic;
++  UINT8       State;
++
++  //
++  // ---- USBFN_IO ----
++  //
++  Ifc = NULL;
++  St  = gBS->LocateProtocol (&mUsbdUsbFnIoGuid, NULL, &Ifc);
++  DEBUG ((EFI_D_ERROR, "[USBPROBE] t=%a USBFN_Status = %r\n", Tag, St));
++  if (!EFI_ERROR (St) && (Ifc != NULL) && (((UINTN)Ifc & 0x7) == 0)) {
++    Rev = ReadUnaligned32 ((UINT32 *)Ifc);
++    DEBUG ((EFI_D_ERROR, "[USBPROBE] t=%a USBFN_Revision = 0x%08x\n", Tag, Rev));
++    Handles = NULL;
++    Count   = 0;
++    St      = gBS->LocateHandleBuffer (ByProtocol, &mUsbdUsbFnIoGuid, NULL, &Count, &Handles);
++    DEBUG ((EFI_D_ERROR, "[USBPROBE] t=%a USBFN_HandleCount = %d (status %r)\n", Tag, (UINT32)Count, St));
++    if (Handles != NULL) {
++      FreePool (Handles);
++    }
++  } else {
++    DEBUG ((EFI_D_ERROR, "[USBPROBE] t=%a USBFN_Revision = UNKNOWN\n", Tag));
++    DEBUG ((EFI_D_ERROR, "[USBPROBE] t=%a USBFN_HandleCount = UNKNOWN\n", Tag));
++  }
++
++  //
++  // ---- MSD ----
++  //
++  Ifc = NULL;
++  St  = gBS->LocateProtocol (&mUsbdMsdGuid, NULL, &Ifc);
++  DEBUG ((EFI_D_ERROR, "[MSDPROBE] t=%a MSD_Status = %r\n", Tag, St));
++  if (!EFI_ERROR (St) && (Ifc != NULL) && (((UINTN)Ifc & 0x7) == 0)) {
++    Rev   = ReadUnaligned32 ((UINT32 *)Ifc);
++    Magic = ReadUnaligned32 ((UINT32 *)((UINT8 *)Ifc - 8));
++    DEBUG ((EFI_D_ERROR, "[MSDPROBE] t=%a MSD_Revision = 0x%08x\n", Tag, Rev));
++    if ((Magic == 0x6D627375u) && (Rev == 0x00010002u)) {
++      DEBUG ((EFI_D_ERROR, "[MSDPROBE] t=%a MSD_Magic = 0x%08x OK\n", Tag, Magic));
++      State = *(volatile UINT8 *)((UINT8 *)Ifc + 0x6B0);   // private Base + 0x6B8
++      DEBUG ((EFI_D_ERROR, "[MSDPROBE] t=%a MSD_State = %d\n", Tag, State));
++    } else {
++      DEBUG ((EFI_D_ERROR, "[MSDPROBE] t=%a MSD_Magic = 0x%08x MISMATCH -> MSD_State = UNKNOWN\n", Tag, Magic));
++    }
++  } else {
++    DEBUG ((EFI_D_ERROR, "[MSDPROBE] t=%a MSD_Revision = UNKNOWN  MSD_Magic = UNKNOWN  MSD_State = UNKNOWN\n", Tag));
++  }
++}
++
++STATIC
++VOID
++UsbDevProbeUsbDeviceDxe (
++  IN CONST CHAR8 *Tag
++  )
++{
++  EFI_STATUS                 St;
++  EFI_STATUS                 CloseSt;
++  EFI_HANDLE                *Handles = NULL;
++  UINTN                      Count   = 0;
++  EFI_LOADED_IMAGE_PROTOCOL *Li      = NULL;
++  EFI_DEVICE_PATH_PROTOCOL  *Node;
++  EFI_GUID                  *FileGuid;
++  UINT64                     ImageBase = 0;
++  UINT64                     ImageSize = 0;
++  UINT64                     Target;
++  UINT64                     Slot;
++  BOOLEAN                    Found = FALSE;
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiLoadedImageProtocolGuid, NULL, &Count, &Handles);
++  if (EFI_ERROR (St) || (Handles == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a Loaded = UNKNOWN (enum %r)\n", Tag, St));
++    return;
++  }
++
++  for (UINTN i = 0; i < Count; i++) {
++    Li = NULL;
++    St = gBS->OpenProtocol (Handles[i], &gEfiLoadedImageProtocolGuid, (VOID **)&Li,
++                            gImageHandle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
++    if (EFI_ERROR (St) || (Li == NULL)) {
++      gBS->CloseProtocol (Handles[i], &gEfiLoadedImageProtocolGuid, gImageHandle, NULL);
++      continue;
++    }
++
++    FileGuid = NULL;
++    if (Li->FilePath != NULL) {
++      for (Node = Li->FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
++        if ((DevicePathType (Node) == MEDIA_DEVICE_PATH) &&
++            (DevicePathSubType (Node) == USBD_MEDIA_FV_FILEPATH_SUBTYPE)) {
++          FileGuid = &((USBD_FV_FILEPATH_NODE *)Node)->Name;
++          break;
++        }
++      }
++    }
++
++    if ((FileGuid != NULL) && CompareGuid (FileGuid, &mUsbdUsbDevGuid)) {
++      ImageBase = (UINT64)(UINTN)Li->ImageBase;
++      ImageSize = (UINT64)Li->ImageSize;
++      Found     = TRUE;
++    }
++
++    CloseSt = gBS->CloseProtocol (Handles[i], &gEfiLoadedImageProtocolGuid, gImageHandle, NULL);
++    if (EFI_ERROR (CloseSt)) {
++      DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a LiClose = %r <== UNBALANCED\n", Tag, CloseSt));
++    }
++    if (Found) {
++      break;
++    }
++  }
++  FreePool (Handles);
++
++  if (!Found) {
++    DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a Loaded = 0 (identity not found)\n", Tag));
++    DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a UsbfnGlobal = UNKNOWN\n", Tag));
++    return;
++  }
++
++  DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a Loaded = 1\n", Tag));
++  DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a ImageBase = 0x%lx  ImageSize = 0x%lx\n", Tag, ImageBase, ImageSize));
++
++  //
++  // Range-validate before dereferencing the private global.
++  //
++  if ((ImageBase != 0) && (ImageSize > USBD_USBDEV_ACTIVATION_RVA + 8)) {
++    Target = ImageBase + USBD_USBDEV_ACTIVATION_RVA;
++    if ((Target > ImageBase) && ((Target + 8) <= (ImageBase + ImageSize))) {
++      DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a IdentityVerified = 1\n", Tag));
++      Slot = *(volatile UINT64 *)(UINTN)Target;
++      DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a UsbfnGlobal = %a (%p)\n",
++              Tag, (Slot == 0) ? "NULL" : "NON_NULL", (VOID *)(UINTN)Slot));
++    } else {
++      DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a UsbfnGlobal = UNKNOWN (range check failed)\n", Tag));
++    }
++  } else {
++    DEBUG ((EFI_D_ERROR, "[USBDEVICE] t=%a UsbfnGlobal = UNKNOWN (image too small)\n", Tag));
++  }
++}
++
+ STATIC
+ VOID
+ EFIAPI
+@@ -736,6 +893,8 @@ UsbDevReadyToBoot (
+   UsbDevReport ("/R2B");
+   UsbDevConfigFields ("/R2B");
+   UsbDevConfigOpenDetails ("/R2B");
++  UsbDevProbeProtocols ("/R2B");
++  UsbDevProbeUsbDeviceDxe ("/R2B");
+ }
+ 
+ STATIC
+@@ -978,6 +1137,8 @@ ManageRam (
+   UsbDevReport ("#1-early");
+   UsbDevConfigFields ("#1-early");
+   UsbDevConfigOpenDetails ("#1-early");
++  UsbDevProbeProtocols ("#1-early");
++  UsbDevProbeUsbDeviceDxe ("#1-early");
+   UsbDevArmConfigNotify ();
+   UsbDevArmReadyToBoot ();
+ 

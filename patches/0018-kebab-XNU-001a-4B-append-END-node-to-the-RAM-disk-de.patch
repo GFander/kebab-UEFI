@@ -1,0 +1,50 @@
+From 7aab64a51d15ee81e9a5a77b5677fd33e52dda78 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 21:54:08 +0800
+Subject: [PATCH 18/38] kebab: XNU-001a-4B append END node to the RAM disk
+ device path
+
+CreateDeviceNode() allocates exactly NodeLength bytes and does NOT append a
+terminating node, so installing that buffer as EFI_DEVICE_PATH_PROTOCOL
+left a 20-byte vendor node with no END_DEVICE_PATH. Any device-path walk
+(NextDevicePathNode/GetDevicePathSize, DiskIo, Fat, BDS) would then read
+past the allocation.
+
+Use AppendDevicePathNode(NULL, node) -> 24 bytes (vendor node + end node),
+free the intermediate node, and keep the appended path allocated for the
+protocol lifetime.
+---
+ .../Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c      | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+index 6a9f8b1f..92d66c60 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+@@ -186,10 +186,24 @@ EFI_STATUS EFIAPI XnuRamDiskDxeEntryPoint (IN EFI_HANDLE ImageHandle, IN EFI_SYS
+   mBlockIo.WriteBlocks = BlkWrite;
+   mBlockIo.FlushBlocks = BlkFlush;
+ 
++  //
++  // CreateDeviceNode() allocates a single node WITHOUT a terminating node.
++  // Installing that raw buffer as EFI_DEVICE_PATH_PROTOCOL would make every
++  // device-path walk run past the allocation. AppendDevicePathNode(NULL, ..)
++  // returns node + END_DEVICE_PATH (24 bytes total for a vendor node).
++  //
+   Vn = (VENDOR_DEVICE_PATH *)CreateDeviceNode (HARDWARE_DEVICE_PATH, HW_VENDOR_DP, sizeof (VENDOR_DEVICE_PATH));
+-  if (Vn == NULL) return EFI_SUCCESS;
++  if (Vn == NULL) {
++    return EFI_SUCCESS;
++  }
+   CopyGuid (&Vn->Guid, &mXnuFatGuid);
+-  Dp = (EFI_DEVICE_PATH_PROTOCOL *)Vn;
++  Dp = AppendDevicePathNode (NULL, (EFI_DEVICE_PATH_PROTOCOL *)Vn);
++  FreePool (Vn);              // node is copied into Dp
++  Vn = NULL;
++  if (Dp == NULL) {
++    return EFI_SUCCESS;
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] DevicePathSize  = %d bytes (needs 24)\n", (UINT32)GetDevicePathSize (Dp)));
+ 
+   St = gBS->InstallMultipleProtocolInterfaces (
+          &mHandle,

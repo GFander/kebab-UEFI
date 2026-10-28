@@ -1,0 +1,75 @@
+From b21e85570d84514ee2801250636430b158eaec40 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 16:10:28 +0800
+Subject: [PATCH 07/38] kebab: A4 fix USB Config open/close agent-handle
+ pairing
+
+CoreHandleProtocol() opens with gDxeCoreImageHandle (Handle.c:1040), so the
+previous CloseProtocol(gImageHandle, NULL) could not match its open record
+and would return EFI_NOT_FOUND, leaking a BY_HANDLE_PROTOCOL entry.
+
+Switch to an explicit pair with our own agent handle:
+  OpenProtocol (Handle, &Guid, &Ifc, gImageHandle, NULL, GET_PROTOCOL)
+  CloseProtocol(Handle, &Guid,      gImageHandle, NULL)   + status printed
+
+Also use ReadUnaligned32() for the two fields. Behaviour otherwise unchanged:
+no BY_DRIVER, no USB Config vtable calls, both sample points kept.
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 26 +++++++++++++++----
+ 1 file changed, 21 insertions(+), 5 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index b9491ab4..3b16b997 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -361,6 +361,7 @@ UsbDevConfigFields (
+   UINT8      *Ifc;
+   UINT32      F88;
+   UINT32      F8C;
++  EFI_STATUS  CloseStatus;
+ 
+   Status = gBS->LocateHandleBuffer (
+                   ByProtocol,
+@@ -376,22 +377,37 @@ UsbDevConfigFields (
+ 
+   for (UINTN i = 0; i < Count; i++) {
+     Ifc    = NULL;
+-    Status = gBS->HandleProtocol (
++    //
++    // Use explicit OpenProtocol(GET_PROTOCOL) with our own AgentHandle.
++    // CoreHandleProtocol() internally opens with gDxeCoreImageHandle, so a
++    // later CloseProtocol(gImageHandle) would not match and would leak an
++    // open record (EFI_NOT_FOUND).
++    //
++    Status = gBS->OpenProtocol (
+                     Handles[i],
+                     &mUsbdUsbConfigGuid,
+-                    (VOID **)&Ifc
++                    (VOID **)&Ifc,
++                    gImageHandle,
++                    NULL,
++                    EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                     );
+     DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigHandle[%d] = %p\n", Tag, (UINT32)i, Handles[i]));
+     DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigStatus[%d] = %r\n", Tag, (UINT32)i, Status));
+ 
+     if (!EFI_ERROR (Status) && (Ifc != NULL)) {
+-      F88 = *(UINT32 *)(Ifc + 0x88);
+-      F8C = *(UINT32 *)(Ifc + 0x8C);
++      F88 = ReadUnaligned32 ((UINT32 *)(Ifc + 0x88));
++      F8C = ReadUnaligned32 ((UINT32 *)(Ifc + 0x8C));
+       DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField88[%d]   = 0x%08x (need <= 3)\n", Tag, (UINT32)i, F88));
+       DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField8C[%d]   = 0x%08x (need == 4)\n", Tag, (UINT32)i, F8C));
+       DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgWouldBind[%d] = %d\n", Tag, (UINT32)i,
+               (UINT32)(((F88 <= 3) && (F8C == 4)) ? 1 : 0)));
+-      gBS->CloseProtocol (Handles[i], &mUsbdUsbConfigGuid, gImageHandle, NULL);
++      CloseStatus = gBS->CloseProtocol (
++                           Handles[i],
++                           &mUsbdUsbConfigGuid,
++                           gImageHandle,
++                           NULL
++                           );
++      DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigClose[%d]  = %r\n", Tag, (UINT32)i, CloseStatus));
+     } else {
+       DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField88[%d]   = UNKNOWN\n", Tag, (UINT32)i));
+       DEBUG ((EFI_D_ERROR, "[USBDEV%s] CfgField8C[%d]   = UNKNOWN\n", Tag, (UINT32)i));

@@ -1,0 +1,41 @@
+Log capture hook (was applied and verified working, then reverted)
+
+(a) MemoryMapLib.c -- add a mapped region so the buffer is legal memory.
+    Insert next to the "UEFI Stack" entry:
+      {"UEFI Log", 0x9FFD0000, 0x00020000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK_XN},
+
+(b) FrameBufferSerialPortLib.c -- SerialPortWrite is the single convergence point
+    for ALL DEBUG output (SEC + DXE + vendor drivers). At the very top of
+    SerialPortWrite() add:
+
+      AppendMemoryLog (Buffer, NumberOfBytes);
+
+    with the helper:
+
+      #define UEFI_LOG_BASE   ((UINTN)0x9FFD0000)
+      #define UEFI_LOG_SIZE   0x00020000U
+      #define UEFI_LOG_MAGIC  0x474F4C55U
+
+      typedef struct {
+        UINT32 Magic; UINT32 Total; UINT32 Cursor; UINT32 Size;
+        UINT8  Data[UEFI_LOG_SIZE - 16];
+      } UEFI_LOG_HEADER;
+
+      STATIC VOID AppendMemoryLog (IN UINT8 *Buffer, IN UINTN NumberOfBytes)
+      {
+        UEFI_LOG_HEADER *Log = (UEFI_LOG_HEADER *)UEFI_LOG_BASE;
+        UINT32 Keep;
+        if ((Buffer == NULL) || (NumberOfBytes == 0)) return;
+        if ((Log->Magic != UEFI_LOG_MAGIC) || (Log->Size != sizeof (Log->Data)) ||
+            (Log->Cursor > Log->Size)) {
+          Log->Magic = UEFI_LOG_MAGIC; Log->Total = 0; Log->Cursor = 0;
+          Log->Size = sizeof (Log->Data);
+        }
+        Log->Total += (UINT32)NumberOfBytes;
+        Keep = (NumberOfBytes > (Log->Size - Log->Cursor)) ? (Log->Size - Log->Cursor) : (UINT32)NumberOfBytes;
+        CopyMem (&Log->Data[Log->Cursor], Buffer, Keep);
+        Log->Cursor += Keep;
+      }
+
+    Note: writing to a fixed address before the MMU map exists is only safe
+    because the region is declared in MemoryMapLib. Do not skip step (a).

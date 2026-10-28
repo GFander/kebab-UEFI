@@ -1,0 +1,53 @@
+From 7347a18e3d856b7a8a90ab38e9b44af6260f92bf Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 23:23:03 +0800
+Subject: [PATCH 25/38] kebab: XNU-002a-4B bound device path nodes by
+ FilePathListLength
+
+XnuOptionIsOurs() only rejected node lengths smaller than the header. A
+node that declared a length running past the end of FilePathListLength was
+still accepted, so a malformed Boot#### could make us read FvFileName
+(16 bytes at Node+4) beyond the variable buffer when the device path is
+the last thing stored in it.
+
+Now every node must satisfy:
+  NodeLen >= sizeof (EFI_DEVICE_PATH_PROTOCOL)
+  NodeLen <= PathEnd - NodeOffset
+before the PIWG file node is inspected, which also guarantees the
+16-byte FvFileName lies inside the list.
+---
+ .../SiliciumPkg/Library/BootManagerLib/BootManager.c  | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index 5fd50360..9a3017f9 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -203,6 +203,8 @@ XnuOptionIsOurs (
+   UINTN                           DescBytes = 0;
+   UINTN                           PathStart;
+   UINTN                           PathEnd;
++  UINTN                           NodeLen;
++  UINTN                           NodeOff;
+ 
+   if ((Option == NULL) || (Size < 8)) {
+     return FALSE;
+@@ -243,11 +245,16 @@ XnuOptionIsOurs (
+     if (IsDevicePathEnd (Node)) {
+       break;
+     }
+-    if (DevicePathNodeLength (Node) < sizeof (EFI_DEVICE_PATH_PROTOCOL)) {
++    NodeLen = DevicePathNodeLength (Node);
++    NodeOff = (UINTN)Node - (UINTN)Option;
++    if (NodeLen < sizeof (EFI_DEVICE_PATH_PROTOCOL)) {
+       return FALSE;                     // malformed node length
+     }
++    if (NodeLen > (PathEnd - NodeOff)) {
++      return FALSE;                     // node claims to extend past the list
++    }
+     if ((Node->Type == MEDIA_DEVICE_PATH) && (Node->SubType == 0x06) &&
+-        (DevicePathNodeLength (Node) >= sizeof (MEDIA_FW_VOL_FILEPATH_DEVICE_PATH))) {
++        (NodeLen >= sizeof (MEDIA_FW_VOL_FILEPATH_DEVICE_PATH))) {
+       CONST MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *F = (CONST MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *)Node;
+       return (BOOLEAN)CompareGuid (&F->FvFileName, &mXnuAppGuid);
+     }

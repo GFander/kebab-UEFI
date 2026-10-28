@@ -1,0 +1,42 @@
+## @file
+#  XNU-002a-2: register UniXNU as an ADDITIONAL boot option.
+#
+#  Unlike the official UniXNUDxe (which moves its option to the FRONT of
+#  BootOrder), this registrar appends the option at the END and never
+#  changes the existing default. The Project Silicium menu stays first.
+##
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = XnuBootEntryDxe
+  FILE_GUID      = C4E1B7A2-9D53-4F08-B6C1-7E2A5D904F31
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = XnuBootEntryDxeEntryPoint
+
+[Sources]
+  XnuBootEntryDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  UefiLib
+  DebugLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DevicePathLib
+  PrintLib
+
+[Protocols]
+  gEfiFirmwareVolume2ProtocolGuid
+
+[Guids]
+  gEfiGlobalVariableGuid
+
+[Depex]
+  TRUE

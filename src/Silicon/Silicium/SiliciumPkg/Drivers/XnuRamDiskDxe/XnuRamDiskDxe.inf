@@ -1,0 +1,45 @@
+## @file
+#  XNU-001a-2: expose an in-firmware FAT image as an EFI_BLOCK_IO_PROTOCOL
+#  device so the EDK2 DiskIo/Partition/Fat stack can present it as
+#  SimpleFileSystem.
+#
+#  Self-contained (no HII, no ASL). Read-only: WriteBlocks returns
+#  EFI_WRITE_PROTECTED and the backing buffer is never modified.
+##
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = XnuRamDiskDxe
+  FILE_GUID      = 5E7A1C93-2D44-4B18-8F06-3A9C51D7E2B4
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = XnuRamDiskDxeEntryPoint
+
+[Sources]
+  XnuRamDiskDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  DebugLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DevicePathLib
+  DxeServicesLib
+
+[Protocols]
+  gEfiBlockIoProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+
+[Guids]
+  gEfiFileInfoGuid
+  gEfiEventReadyToBootGuid
+
+[Depex]
+  TRUE

@@ -1,0 +1,35 @@
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = LogExportDxe
+  FILE_GUID                      = 0C1E7B42-9A55-4D2E-8C31-6F0B2D7E5A19
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = LogExportEntry
+
+[Sources]
+  LogExportDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  QcomPkg/QcomPkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+
+[LibraryClasses]
+  DebugLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DxeServicesLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiBlockIoProtocolGuid
+  gEfiUsbMsdProtocolGuid
+
+[Pcd]
+  gSiliciumPkgTokenSpaceGuid.PcdLogDiskImageFile
+
+[Depex]
+  TRUE

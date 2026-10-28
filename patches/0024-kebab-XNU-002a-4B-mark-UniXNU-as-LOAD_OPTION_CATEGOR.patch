@@ -1,0 +1,110 @@
+From e9f42b4ecd0bbc9f27c4dd0d7a17ccdd0ca4eda3 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 23:18:10 +0800
+Subject: [PATCH 24/38] kebab: XNU-002a-4B mark UniXNU as
+ LOAD_OPTION_CATEGORY_APP
+
+BdsEntry.c:409 skips any option whose category is not CATEGORY_BOOT, so
+the automatic boot loop will never pick UniXNU even when every earlier
+option fails. The Boot Manager menu is not affected: IgnoreBootOption()
+(BootManagerMenu.c:325) only skips the menu itself and 'UEFI Misc Device'
+entries, so an ACTIVE|CATEGORY_APP option stays selectable, and
+EfiBootManagerBoot() only consults the category for
+BmSetMemoryTypeInformationVariable() -- it never refuses the load.
+
+Attributes are now LOAD_OPTION_ACTIVE | LOAD_OPTION_CATEGORY_APP (no
+HIDDEN, so it stays visible).
+
+Also hardened XnuOptionIsOurs():
+  - locate the description's NUL inside the variable before any StrCmp;
+  - bound the device-path walk by FilePathListLength as well as by the
+    variable size, and reject node lengths smaller than the header.
+  A malformed Boot#### can no longer cause an out-of-bounds read.
+---
+ .../Library/BootManagerLib/BootManager.c      | 48 ++++++++++++++-----
+ 1 file changed, 37 insertions(+), 11 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index e80cd8cd..5fd50360 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -197,34 +197,60 @@ XnuOptionIsOurs (
+   IN UINTN        Size
+   )
+ {
+-  UINT16                    PathLen;
+-  CONST CHAR16             *Desc;
++  UINT16                          PathLen;
++  CONST CHAR16                   *Desc;
+   CONST EFI_DEVICE_PATH_PROTOCOL *Node;
++  UINTN                           DescBytes = 0;
++  UINTN                           PathStart;
++  UINTN                           PathEnd;
+ 
+   if ((Option == NULL) || (Size < 8)) {
+     return FALSE;
+   }
+   PathLen = *(CONST UINT16 *)(Option + 4);
+   Desc    = (CONST CHAR16 *)(Option + 6);
+-  if (((UINTN)Desc - (UINTN)Option) >= Size) {
+-    return FALSE;
++
++  //
++  // Find a NUL inside the variable BEFORE any string comparison, so a
++  // malformed Boot#### cannot make us read past the buffer.
++  //
++  while (DescBytes + sizeof (CHAR16) <= (Size - 6)) {
++    if (Desc[DescBytes / sizeof (CHAR16)] == L'\0') {
++      break;
++    }
++    DescBytes += sizeof (CHAR16);
+   }
++  if (DescBytes + sizeof (CHAR16) > (Size - 6)) {
++    return FALSE;                       // no terminator inside the variable
++  }
++  DescBytes += sizeof (CHAR16);
++
+   if (StrCmp ((CHAR16 *)Desc, mXnuDesc) != 0) {
+     return FALSE;
+   }
+-  if ((6 + StrSize (mXnuDesc) + PathLen) > Size) {
++
++  //
++  // The device path must fit inside the variable AND inside
++  // FilePathListLength; walk it only within those bounds.
++  //
++  PathStart = 6 + DescBytes;
++  if ((PathStart > Size) || (PathLen == 0) || (PathLen > (Size - PathStart))) {
+     return FALSE;
+   }
+-  Node = (CONST EFI_DEVICE_PATH_PROTOCOL *)(Option + 6 + StrSize (mXnuDesc));
+-  while ((UINTN)Node - (UINTN)Option < Size) {
++  PathEnd = PathStart + PathLen;
++  Node    = (CONST EFI_DEVICE_PATH_PROTOCOL *)(Option + PathStart);
++  while (((UINTN)Node - (UINTN)Option + sizeof (EFI_DEVICE_PATH_PROTOCOL)) <= PathEnd) {
++    if (IsDevicePathEnd (Node)) {
++      break;
++    }
++    if (DevicePathNodeLength (Node) < sizeof (EFI_DEVICE_PATH_PROTOCOL)) {
++      return FALSE;                     // malformed node length
++    }
+     if ((Node->Type == MEDIA_DEVICE_PATH) && (Node->SubType == 0x06) &&
+         (DevicePathNodeLength (Node) >= sizeof (MEDIA_FW_VOL_FILEPATH_DEVICE_PATH))) {
+       CONST MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *F = (CONST MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *)Node;
+       return (BOOLEAN)CompareGuid (&F->FvFileName, &mXnuAppGuid);
+     }
+-    if (IsDevicePathEnd (Node)) {
+-      break;
+-    }
+     Node = NextDevicePathNode (Node);
+   }
+   return FALSE;
+@@ -310,7 +336,7 @@ XnuRegisterUniXNU (
+   UINTN                     OptionSize;
+   UINT16                    Number = 0xFFFF;
+   CHAR16                    Name[10];
+-  UINT32                    Attr = LOAD_OPTION_ACTIVE;
++  UINT32                    Attr = LOAD_OPTION_ACTIVE | LOAD_OPTION_CATEGORY_APP;
+ 
+   Status = XnuFindAppFv (&FvHandle);
+   if (EFI_ERROR (Status)) {

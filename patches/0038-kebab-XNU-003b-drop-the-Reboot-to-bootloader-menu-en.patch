@@ -1,0 +1,197 @@
+From 7013966cf3680d7e82cbd69f4a799b2de8f24cdb Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:58:51 +0800
+Subject: [PATCH 38/38] kebab: XNU-003b drop the 'Reboot to bootloader' menu
+ entry
+
+The device shows exactly one BlockIo handle - our own 512 KiB RAM disk
+(logical=0 blockSize=512 last=1023) - so there is no storage block device
+and the misc partition cannot be reached. kebab.dsc/kebab.fdf contain no
+UFS driver at all.
+
+The BootToBl application stays in the tree and still builds (it is a
+useful diagnostic and will work once storage is enabled), but it is no
+longer packed into the config volume, so the menu returns to:
+
+    Hello Payload / Restart / Power off / Return to firmware
+
+Enabling UFS storage is the prerequisite for xnu-004 anyway.
+---
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 524288 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12_dir.py      |  10 ++--------
+ 2 files changed, 2 insertions(+), 8 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index 667b312cfdced2c97af1f9d061183fff0d1497e0..87789602cbdf339374cb43628f829a0a09763f89 100644
+GIT binary patch
+delta 125
+zcmZo@P-tjS*dWQo^#A{6N4BSolUO9-Og1ZKL52dL@P6ru0W6c?+{5gfv}`ySdp6q|
+zJ!aqR%=UnNlGB>aLeB5lCI+M}@(O7B)b@$7?GsbmC+4<KEN!1y+di>v4q)3LjY517
+F0sv)ZFdqN_
+
+delta 12837
+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
+Yj_7tB(eFB9*mWdm*OB0#9SNEE|5^=`Gynhq
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+index f6dd84f2..16b07b00 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -242,7 +242,7 @@ def selftest(path):
+ if __name__ == "__main__":
+     out = sys.argv[1]
+     payload = open(sys.argv[2], "rb").read()
+-    blboot = open(sys.argv[3], "rb").read()
++    blboot = None
+     toml = b"""version = 1
+ 
+ [boot]
+@@ -256,12 +256,6 @@ type = "efi"
+ path = "Payloads/HELLO.EFI"
+ args = "pause"
+ 
+-[[entry]]
+-id = "bootloader"
+-title = "Reboot to bootloader"
+-type = "efi"
+-path = "Payloads/BLBOOT.EFI"
+-
+ [[entry]]
+ id = "reboot"
+ title = "Restart"
+@@ -281,7 +275,7 @@ type = "action"
+ action = "exit"
+ """
+     tree = {
+-        "EFI": {"UniXNU": {"unixnu.toml": toml, "Payloads": {"HELLO.EFI": payload, "BLBOOT.EFI": blboot}}},
++        "EFI": {"UniXNU": {"unixnu.toml": toml, "Payloads": {"HELLO.EFI": payload}}},
+         "XNU-TEST.TXT": (
+             b"XNU-000 RAM FAT probe file.\n"
+             b"Generated for the OnePlus 8T kebab UEFI bring-up.\n"

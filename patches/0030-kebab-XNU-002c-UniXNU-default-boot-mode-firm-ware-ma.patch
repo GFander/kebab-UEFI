@@ -1,0 +1,107 @@
+From 9f666fd6ad008d2e735278e8013c568a802e851c Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:28:51 +0800
+Subject: [PATCH 30/38] kebab: XNU-002c UniXNU default-boot mode + firm-ware
+ marker fix
+
+1) The boot option carried an ASCII 'unixnu:firmware' (16 bytes).
+   UniXNU compares LoadOptions against L"unixnu:firmware" and requires
+   LoadOptionsSize >= sizeof (CHAR16[16]) = 32, so it never entered
+   UniXNUHostFirmware and 'Return to firmware' did not return EFI_ABORTED.
+   The marker is now the UTF-16 string (32 bytes).
+
+2) XNU_UNIXNU_AUTOBOOT (compile-time, default 1) selects the mode:
+     1 -> LOAD_OPTION_ACTIVE | LOAD_OPTION_CATEGORY_BOOT, and Boot9800 is
+          placed FIRST in BootOrder; every other entry keeps its order.
+     0 -> previous behaviour (CATEGORY_APP, appended last).
+   BootNext is never written, no foreign option is touched, and the write
+   result is re-read and printed.
+
+Recovery stays intact: BdsEntry starts the hotkey service (933), calls
+PlatformBootManagerAfterConsole (972), waits for a hotkey (1086) and only
+then runs BootBootOptions (1143), so Volume Up still reaches the Project
+Silicium Boot Manager before any automatic boot.
+---
+ .../Library/BootManagerLib/BootManager.c      | 32 ++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index 505897fc..754a6ea8 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -26,6 +26,13 @@
+ #include <Protocol/FirmwareVolume2.h>
+ #include <Guid/GlobalVariable.h>
+ 
++//
++// XNU-002c: 1 = UniXNU is the default boot entry (CATEGORY_BOOT, first
++// in BootOrder).  0 = previous behaviour (CATEGORY_APP, appended last,
++// manual selection only).  Flip and rebuild to switch.
++//
++#define XNU_UNIXNU_AUTOBOOT  1
++
+ 
+ #include <Configuration/BootDevices.h>
+ 
+@@ -121,7 +128,14 @@ PostGopSetup (OUT EFI_GRAPHICS_OUTPUT_PROTOCOL **GopProtocol)
+ 
+ STATIC EFI_GUID mXnuAppGuid = XNU_APP_FILE_GUID;
+ STATIC CHAR16   mXnuDesc[]  = L"UniXNU";
+-STATIC CHAR8    mXnuOptData[] = "unixnu:firmware";
++//
++// UniXNU compares LoadOptions against L"unixnu:firmware" with
++// sizeof (CHAR16[16]) = 32 bytes, so the marker MUST be UTF-16.
++// An ASCII copy (16 bytes) fails both the size and the memcmp and
++// leaves UniXNU in Application host mode, where "Return to
++// firmware" does not return EFI_ABORTED.
++//
++STATIC CHAR16   mXnuOptData[] = L"unixnu:firmware";
+ 
+ STATIC
+ EFI_STATUS
+@@ -302,13 +316,21 @@ XnuMakeLast (
+     if (Order != NULL) FreePool (Order);
+     return;
+   }
++#if XNU_UNIXNU_AUTOBOOT
++  //
++  // Default-boot mode: UniXNU first, every other entry keeps its order.
++  //
++  New[Out++] = Number;
++#endif
+   for (UINTN i = 0; i < Count; i++) {
+     if (Order[i] == Number) {
+       continue;                        // drop from its current position
+     }
+     New[Out++] = Order[i];
+   }
++#if !XNU_UNIXNU_AUTOBOOT
+   New[Out++] = Number;
++#endif
+ 
+   //
+   // Write whenever the number is not already the last element.  The old
+@@ -316,7 +338,11 @@ XnuMakeLast (
+   // option was built in memory but never stored - while the debug line still
+   // printed Count+1, which is what made the earlier 4->5 report misleading.
+   //
++#if XNU_UNIXNU_AUTOBOOT
++  Changed = (BOOLEAN) !((Count > 0) && (Order[0] == Number) && (Out == Count));
++#else
+   Changed = (BOOLEAN) !((Count > 0) && (Order[Count - 1] == Number) && (Out == Count));
++#endif
+ 
+   if (Changed) {
+     Status = gRT->SetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid,
+@@ -496,7 +522,11 @@ XnuRegisterUniXNU (
+   UINTN                     OptionSize;
+   UINT16                    Number = 0xFFFF;
+   CHAR16                    Name[10];
++#if XNU_UNIXNU_AUTOBOOT
++  UINT32                    Attr = LOAD_OPTION_ACTIVE | LOAD_OPTION_CATEGORY_BOOT;
++#else
+   UINT32                    Attr = LOAD_OPTION_ACTIVE | LOAD_OPTION_CATEGORY_APP;
++#endif
+ 
+   Status = XnuFindAppFv (&FvHandle);
+   if (EFI_ERROR (Status)) {

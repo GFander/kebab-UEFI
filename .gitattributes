@@ -1,0 +1,5 @@
+* -text
+*.patch -text
+*.img binary
+*.efi binary
+*.fd binary

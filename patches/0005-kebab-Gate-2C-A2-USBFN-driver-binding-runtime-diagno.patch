@@ -1,0 +1,312 @@
+From 9101b460d2f76e1fa41656e76136768ddd1b06a1 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 14:11:00 +0800
+Subject: [PATCH 05/38] kebab: Gate-2C-A2 USBFN driver binding runtime
+ diagnostics
+
+- Compile-time asserts pin the EFI_BOOT_SERVICES layout (Hdr=0x18):
+  LocateProtocol=0x140, OpenProtocol=0x118, InstallMulti=0x148.
+- [USBDEV] DriverBinding ownership resolved via
+  DriverBinding->ImageHandle -> LoadedImage->FilePath -> FV file GUID
+  matched against UsbfnDwc3Dxe 94F8A6A7-DC34-4101-88C1-99179CCEAE83.
+- [USBDEV] USB Config (E722B03F) handles enumerated and inspected with
+  OpenProtocolInformation() to detect BY_DRIVER opens by the USBFN agent.
+- Second sample armed on ReadyToBoot (event, not timer).
+- Read-only: no writes, no vendor patch, no protocol ownership taken.
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 227 ++++++++++++++++++
+ .../Drivers/RamManagerDxe/RamManagerDxe.inf   |   7 +
+ 2 files changed, 234 insertions(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index 25e42763..83231198 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -30,6 +30,10 @@
+   IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ **/
+ 
++#include <Base.h>
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DevicePathLib.h>
+ #include <Library/DebugLib.h>
+ #include <Library/MemoryAllocationHelperLib.h>
+ #include <Library/UefiBootServicesTableLib.h>
+@@ -43,6 +47,10 @@
+ #include <Protocol/SimpleFileSystem.h>
+ #include <Protocol/PciIo.h>
+ #include <Protocol/UsbFunctionIo.h>
++#include <Protocol/DevicePath.h>
++#include <Protocol/DriverBinding.h>
++#include <Protocol/LoadedImage.h>
++#include <Guid/EventGroup.h>
+ 
+ STATIC
+ VOID
+@@ -111,6 +119,14 @@ STATIC
+ VOID
+ DumpUsbCfgCandidates (VOID);
+ 
++STATIC
++VOID
++UsbDevReport (CONST CHAR8 *Tag);
++
++STATIC
++VOID
++UsbDevArmReadyToBoot (VOID);
++
+ STATIC EFI_GUID mUsbCfgCand[] = {
+   { 0xB898D8DC, 0x080A, 0x40F7, { 0x99, 0xE3, 0x31, 0x62, 0x7B, 0x80, 0x6A, 0x5A }},
+   { 0x0A134F0E, 0x075E, 0x40B3, { 0x9C, 0x63, 0x3B, 0x39, 0x06, 0x80, 0x46, 0x63 }},
+@@ -142,6 +158,215 @@ DumpUsbCfgCandidates (VOID)
+           Present, (UINT32)ARRAY_SIZE (mUsbCfgCand)));
+ }
+ 
++//
++// ---- Gate-2C-A2: USBFN Driver Binding runtime diagnostics ----
++//
++// Task 0: compile-time verification of the EFI_BOOT_SERVICES layout.
++// EFI_BOOT_SERVICES starts with EFI_TABLE_HEADER (0x18 bytes). Member offsets
++// are therefore 0x18 + index*8, NOT index*8. These asserts fail the build if
++// the local ABI ever diverges from the standard layout.
++//
++typedef char UsbdAssertTableHeader[((sizeof (EFI_TABLE_HEADER)) == 0x18) ? 1 : -1];
++typedef char UsbdAssertInstallProto[((OFFSET_OF (EFI_BOOT_SERVICES, InstallProtocolInterface)) == 0x80) ? 1 : -1];
++typedef char UsbdAssertOpenProto[((OFFSET_OF (EFI_BOOT_SERVICES, OpenProtocol)) == 0x118) ? 1 : -1];
++typedef char UsbdAssertLocateProto[((OFFSET_OF (EFI_BOOT_SERVICES, LocateProtocol)) == 0x140) ? 1 : -1];
++typedef char UsbdAssertInstallMulti[((OFFSET_OF (EFI_BOOT_SERVICES, InstallMultipleProtocolInterfaces)) == 0x148) ? 1 : -1];
++
++#define USBD_MEDIA_FV_FILEPATH_SUBTYPE  0x06
++
++typedef struct {
++  EFI_DEVICE_PATH_PROTOCOL Header;
++  EFI_GUID                 Name;
++} USBD_FV_FILEPATH_NODE;
++
++// FFS FILE_GUID of UsbfnDwc3Dxe (from its INF)
++STATIC EFI_GUID mUsbdUsbfnFileGuid = { 0x94F8A6A7, 0xDC34, 0x4101, { 0x88, 0xC1, 0x99, 0x17, 0x9C, 0xCE, 0xAE, 0x83 }};
++// Qualcomm USB Config protocol (reverse engineered, see Gate-2C-A1)
++STATIC EFI_GUID mUsbdUsbConfigGuid = { 0xE722B03F, 0xB250, 0x42CE, { 0x8E, 0xBD, 0x5B, 0xD5, 0x18, 0x12, 0xD0, 0x37 }};
++STATIC EFI_GUID mUsbdUsbfnIoGuid   = { 0x32D2963A, 0xFE5D, 0x4F30, { 0xB6, 0x33, 0x6E, 0x5D, 0xC5, 0x58, 0x03, 0xCC }};
++
++STATIC
++BOOLEAN
++UsbdFileIs (
++  IN EFI_DEVICE_PATH_PROTOCOL *Path,
++  IN EFI_GUID                 *FileGuid
++  )
++{
++  EFI_DEVICE_PATH_PROTOCOL *Node;
++
++  if (Path == NULL) {
++    return FALSE;
++  }
++
++  for (Node = Path; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
++    if ((DevicePathType (Node) == MEDIA_DEVICE_PATH) &&
++        (DevicePathSubType (Node) == USBD_MEDIA_FV_FILEPATH_SUBTYPE)) {
++      if (CompareGuid (&((USBD_FV_FILEPATH_NODE *)Node)->Name, FileGuid)) {
++        return TRUE;
++      }
++    }
++  }
++
++  return FALSE;
++}
++
++STATIC
++EFI_HANDLE
++UsbdFindUsbfnImage (VOID)
++{
++  EFI_STATUS                   Status;
++  EFI_HANDLE                  *Handles = NULL;
++  UINTN                        Count   = 0;
++  EFI_HANDLE                   Found   = NULL;
++  EFI_DRIVER_BINDING_PROTOCOL *Db;
++  EFI_LOADED_IMAGE_PROTOCOL   *Li;
++
++  Status = gBS->LocateHandleBuffer (
++                  ByProtocol,
++                  &gEfiDriverBindingProtocolGuid,
++                  NULL,
++                  &Count,
++                  &Handles
++                  );
++  if (EFI_ERROR (Status) || (Handles == NULL)) {
++    return NULL;
++  }
++
++  for (UINTN i = 0; i < Count; i++) {
++    Db = NULL;
++    Li = NULL;
++    Status = gBS->HandleProtocol (
++                    Handles[i],
++                    &gEfiDriverBindingProtocolGuid,
++                    (VOID **)&Db
++                    );
++    if (EFI_ERROR (Status) || (Db == NULL) || (Db->ImageHandle == NULL)) {
++      continue;
++    }
++
++    Status = gBS->HandleProtocol (
++                    Db->ImageHandle,
++                    &gEfiLoadedImageProtocolGuid,
++                    (VOID **)&Li
++                    );
++    if (EFI_ERROR (Status) || (Li == NULL)) {
++      continue;
++    }
++
++    if (UsbdFileIs (Li->FilePath, &mUsbdUsbfnFileGuid)) {
++      Found = Db->ImageHandle;
++      break;
++    }
++  }
++
++  FreePool (Handles);
++  return Found;
++}
++
++STATIC
++VOID
++UsbDevReport (
++  IN CONST CHAR8 *Tag
++  )
++{
++  EFI_STATUS                           Status;
++  EFI_HANDLE                           UsbfnImage = NULL;
++  EFI_HANDLE                          *CfgHandles = NULL;
++  UINTN                                CfgCount   = 0;
++  UINTN                                TotalOpen  = 0;
++  UINTN                                ByFnOpen   = 0;
++  UINTN                                InfoCount  = 0;
++  EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *Info       = NULL;
++  VOID                                *Io         = NULL;
++
++  UsbfnImage = UsbdFindUsbfnImage ();
++
++  Status = gBS->LocateHandleBuffer (
++                  ByProtocol,
++                  &mUsbdUsbConfigGuid,
++                  NULL,
++                  &CfgCount,
++                  &CfgHandles
++                  );
++  if (EFI_ERROR (Status)) {
++    CfgCount   = 0;
++    CfgHandles = NULL;
++  }
++
++  if (CfgHandles != NULL) {
++    for (UINTN i = 0; i < CfgCount; i++) {
++      Info      = NULL;
++      InfoCount = 0;
++      Status    = gBS->OpenProtocolInformation (
++                         CfgHandles[i],
++                         &mUsbdUsbConfigGuid,
++                         &Info,
++                         &InfoCount
++                         );
++      if (EFI_ERROR (Status)) {
++        continue;
++      }
++
++      for (UINTN j = 0; j < InfoCount; j++) {
++        TotalOpen++;
++        if ((UsbfnImage != NULL) && (Info[j].AgentHandle == UsbfnImage) &&
++            ((Info[j].Attributes & EFI_OPEN_PROTOCOL_BY_DRIVER) != 0)) {
++          ByFnOpen++;
++        }
++      }
++
++      if (Info != NULL) {
++        FreePool (Info);
++      }
++    }
++
++    FreePool (CfgHandles);
++  }
++
++  Status = gBS->LocateProtocol (&mUsbdUsbfnIoGuid, NULL, &Io);
++
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] BindingFound       = %d\n", Tag, (UINT32)((UsbfnImage != NULL) ? 1 : 0)));
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigHandles      = %d\n", Tag, (UINT32)CfgCount));
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigOpenEntries  = %d\n", Tag, (UINT32)TotalOpen));
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] ConfigOpenedByUsbFn = %d\n", Tag, (UINT32)ByFnOpen));
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] USBFN_IO           = %d\n", Tag, (UINT32)((Io != NULL) ? 1 : 0)));
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] BindingStart       = UNKNOWN (needs vendor patch)\n", Tag));
++  DEBUG ((EFI_D_ERROR, "[USBDEV%s] CoreBase/Role      = UNKNOWN (no public API)\n", Tag));
++}
++
++STATIC
++VOID
++EFIAPI
++UsbDevReadyToBoot (
++  IN EFI_EVENT Event,
++  IN VOID     *Context
++  )
++{
++  UsbDevReport ("/R2B");
++}
++
++STATIC
++VOID
++UsbDevArmReadyToBoot (
++  VOID
++  )
++{
++  EFI_STATUS Status;
++  EFI_EVENT  Event = NULL;
++
++  Status = gBS->CreateEventEx (
++                  EVT_NOTIFY_SIGNAL,
++                  TPL_CALLBACK,
++                  UsbDevReadyToBoot,
++                  NULL,
++                  &gEfiEventReadyToBootGuid,
++                  &Event
++                  );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "[USBDEV] ReadyToBoot event failed: %r\n", Status));
++  }
++}
++
+ STATIC
+ VOID
+ DiagDumpProtocols (VOID);
+@@ -357,6 +582,8 @@ ManageRam (
+   DiagDumpProtocols ();
+   DumpUsbfnPrereq ();
+   DumpUsbCfgCandidates ();
++  UsbDevReport ("");
++  UsbDevArmReadyToBoot ();
+ 
+   // Arm a one-shot dump that fires after BDS has connected all drivers
+   DiagArmDeferredDump ();
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+index 1b8ed9cb..4b33aaac 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+@@ -16,7 +16,9 @@
+   QcomPkg/QcomPkg.dec
+ 
+ [LibraryClasses]
++  BaseMemoryLib
+   DebugLib
++  DevicePathLib
+   MemoryAllocationHelperLib
+   UefiBootServicesTableLib
+   UefiDriverEntryPoint
+@@ -32,6 +34,11 @@
+   gEfiPciIoProtocolGuid
+   gQcomQseecomProtocolGuid
+   gEfiUsbFunctionIoProtocolGuid
++  gEfiDriverBindingProtocolGuid
++  gEfiLoadedImageProtocolGuid
+ 
+ [Depex]
+   TRUE
++
++[Guids]
++  gEfiEventReadyToBootGuid

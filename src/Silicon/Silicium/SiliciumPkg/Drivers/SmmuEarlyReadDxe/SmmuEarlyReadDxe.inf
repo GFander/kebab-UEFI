@@ -1,0 +1,26 @@
+## @file
+#  XNU-004 discriminator: read-only SMMU access at APRIORI time.
+##
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = SmmuEarlyReadDxe
+  FILE_GUID      = 5D8E2B71-9C43-4A16-B7F0-3E95C1D2A806
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = SmmuEarlyReadEntry
+
+[Sources]
+  SmmuEarlyReadDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  DebugLib
+  BaseLib
+
+[Depex]
+  TRUE

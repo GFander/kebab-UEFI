@@ -1,0 +1,66 @@
+From 58dceeface541ac4479cb5316df02bc5763b761e Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 17:32:33 +0800
+Subject: [PATCH 11/38] kebab: A10b follow-up - convert last HandleProtocol
+ uses
+
+UsbdFindUsbfnImage() still opened DriverBinding/LoadedImage with
+HandleProtocol (AgentHandle = gDxeCoreImageHandle), which cannot be closed
+by us and would leak open records. Convert to OpenProtocol(GET_PROTOCOL)
+with our own agent handle and close both on every path.
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 29 ++++++++++++++-----
+ 1 file changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index 88865de2..33def4fe 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -247,26 +247,39 @@ UsbdFindUsbfnImage (VOID)
+   for (UINTN i = 0; i < Count; i++) {
+     Db = NULL;
+     Li = NULL;
+-    Status = gBS->HandleProtocol (
++    //
++    // Use OpenProtocol(GET_PROTOCOL) with our own AgentHandle: HandleProtocol
++    // opens as gDxeCoreImageHandle and our CloseProtocol would not match.
++    //
++    Status = gBS->OpenProtocol (
+                     Handles[i],
+                     &gEfiDriverBindingProtocolGuid,
+-                    (VOID **)&Db
++                    (VOID **)&Db,
++                    gImageHandle,
++                    NULL,
++                    EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                     );
+     if (EFI_ERROR (Status) || (Db == NULL) || (Db->ImageHandle == NULL)) {
++      gBS->CloseProtocol (Handles[i], &gEfiDriverBindingProtocolGuid, gImageHandle, NULL);
+       continue;
+     }
+ 
+-    Status = gBS->HandleProtocol (
++    Status = gBS->OpenProtocol (
+                     Db->ImageHandle,
+                     &gEfiLoadedImageProtocolGuid,
+-                    (VOID **)&Li
++                    (VOID **)&Li,
++                    gImageHandle,
++                    NULL,
++                    EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                     );
+-    if (EFI_ERROR (Status) || (Li == NULL)) {
+-      continue;
++    if (!EFI_ERROR (Status) && (Li != NULL) && UsbdFileIs (Li->FilePath, &mUsbdUsbfnFileGuid)) {
++      Found = Db->ImageHandle;
+     }
+ 
+-    if (UsbdFileIs (Li->FilePath, &mUsbdUsbfnFileGuid)) {
+-      Found = Db->ImageHandle;
++    gBS->CloseProtocol (Db->ImageHandle, &gEfiLoadedImageProtocolGuid, gImageHandle, NULL);
++    gBS->CloseProtocol (Handles[i], &gEfiDriverBindingProtocolGuid, gImageHandle, NULL);
++
++    if (Found != NULL) {
+       break;
+     }
+   }

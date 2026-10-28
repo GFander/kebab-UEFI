@@ -1,0 +1,88 @@
+From 45f74e92a2c5cf28ff66f3c1ac35d48d9e3f5523 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 17:47:08 +0800
+Subject: [PATCH 12/38] kebab: A10b fix BOOT-HANGING ASSERT in protocol notify
+ callback
+
+LocateHandle(ByRegisterNotify, ...) requires SearchKey to be the
+Registration pointer from RegisterProtocolNotify, NOT the Event. Passing the
+Event hit 'ASSERT [DxeCore] Locate.c(355): ProtNotify->Signature' and halted
+the machine (Boot Manager unreachable).
+
+Remove ByRegisterNotify entirely: the callback now enumerates by protocol
+with LocateHandleBuffer and diffs against the baseline snapshot. Same
+information, no fragile API, and it also handles several instances being
+installed at once.
+---
+ .../Drivers/RamManagerDxe/RamManager.c        | 47 +++++++++++--------
+ 1 file changed, 28 insertions(+), 19 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index 33def4fe..61ad3bc3 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -654,36 +654,45 @@ UsbCfgNotifyCallback (
+   )
+ {
+   EFI_STATUS  St;
+-  EFI_HANDLE  Handle;
+-  UINTN       Size;
++  EFI_HANDLE *Handles = NULL;
++  UINTN       Count   = 0;
+ 
+   mUsbCfgNotifySeq++;
+   DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d begin\n", mUsbCfgNotifySeq));
+ 
+-  for (;;) {
+-    Handle = NULL;
+-    Size   = sizeof (Handle);
+-    St     = gBS->LocateHandle (ByRegisterNotify, NULL, Event, &Size, &Handle);
+-    if (EFI_ERROR (St)) {
+-      break;
+-    }
++  //
++  // Do NOT use LocateHandle(ByRegisterNotify): its SearchKey must be the
++  // Registration pointer returned by RegisterProtocolNotify, not the Event.
++  // Passing the Event trips ASSERT in DxeCore Locate.c(355) and halts boot.
++  // Enumerating by protocol and diffing against the baseline is equivalent
++  // here, safe, and also handles several instances installed at once.
++  //
++  St = gBS->LocateHandleBuffer (ByProtocol, &mUsbdUsbConfigGuid, NULL, &Count, &Handles);
++  if (EFI_ERROR (St) || (Handles == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d enum failed %r\n", mUsbCfgNotifySeq, St));
++    return;
++  }
+ 
++  for (UINTN i = 0; i < Count; i++) {
+     mUsbCfgSeenCount++;
+ 
+-    if (UsbdIsBaseline (Handle)) {
++    if (UsbdIsBaseline (Handles[i])) {
+       DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d Handle=%p -> pre-existing (see BASELINE), not a new install\n",
+-              mUsbCfgNotifySeq, Handle));
+-    } else {
+-      mUsbCfgNewCount++;
+-      if (mUsbCfgBaselineCount < USBD_BASELINE_MAX) {
+-        mUsbCfgBaseline[mUsbCfgBaselineCount++] = Handle;   // remember so we never double-count
+-      }
+-      DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d Handle=%p -> NEW install (#%d)\n",
+-              mUsbCfgNotifySeq, Handle, mUsbCfgNewCount));
+-      UsbdPrintCoreFields ("NOTIFY", mUsbCfgNotifySeq, Handle);
++              mUsbCfgNotifySeq, Handles[i]));
++      continue;
++    }
++
++    mUsbCfgNewCount++;
++    if (mUsbCfgBaselineCount < USBD_BASELINE_MAX) {
++      mUsbCfgBaseline[mUsbCfgBaselineCount++] = Handles[i];
+     }
++    DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d Handle=%p -> NEW install (#%d)\n",
++            mUsbCfgNotifySeq, Handles[i], mUsbCfgNewCount));
++    UsbdPrintCoreFields ("NOTIFY", mUsbCfgNotifySeq, Handles[i]);
+   }
+ 
++  FreePool (Handles);
++
+   DEBUG ((EFI_D_ERROR, "[USBCFG/NOTIFY] Callback=%d end (seenTotal=%d newTotal=%d)\n",
+           mUsbCfgNotifySeq, mUsbCfgSeenCount, mUsbCfgNewCount));
+ }

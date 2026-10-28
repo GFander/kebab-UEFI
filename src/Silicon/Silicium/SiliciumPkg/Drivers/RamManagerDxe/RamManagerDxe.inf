@@ -1,0 +1,44 @@
+[Defines]
+  INF_VERSION                    = 0x0010005
+  BASE_NAME                      = RamManagerDxe
+  FILE_GUID                      = F4C010C0-96F1-4B49-BFDA-E982B807F44E
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = ManageRam
+
+[Sources]
+  RamManager.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  QcomPkg/QcomPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  MemoryAllocationHelperLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  MemoryAllocationLib
+  RamManagerLib
+  SortLib
+
+[Protocols]
+  gEfiUsb2HcProtocolGuid
+  gEfiUsbIoProtocolGuid
+  gEfiBlockIoProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiPciIoProtocolGuid
+  gQcomQseecomProtocolGuid
+  gEfiUsbFunctionIoProtocolGuid
+  gEfiDriverBindingProtocolGuid
+  gEfiLoadedImageProtocolGuid
+
+[Depex]
+  TRUE
+
+[Guids]
+  gEfiEventReadyToBootGuid

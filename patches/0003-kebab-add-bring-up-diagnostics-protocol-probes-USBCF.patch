@@ -1,0 +1,256 @@
+From fca99f4185d5b65e32f58f4871279655314005e4 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 13:50:12 +0800
+Subject: [PATCH 03/38] kebab: add bring-up diagnostics (protocol probes,
+ USBCFG candidates)
+
+Diagnostics only, no functional change:
+- PcdDebugPrintErrorLevel = EFI_D_ERROR so vendor driver errors surface
+- [DIAG] protocol presence counters (USB2_HC/USB_IO/BLOCK_IO/SIMPLE_FS/PCI_IO/QSEECOM/USBFN_IO)
+- [DBG] UsbfnDwc3Dxe depex prerequisite probe (16 GUIDs)
+- [USBCFG] candidate GUID probe
+
+Verified on device: baseline still boots, Boot Manager reachable.
+---
+ Platforms/OnePlus/kebabPkg/kebab.dsc          |   5 +
+ .../Drivers/RamManagerDxe/RamManager.c        | 169 +++++++++++++++++-
+ .../Drivers/RamManagerDxe/RamManagerDxe.inf   |  10 ++
+ 3 files changed, 183 insertions(+), 1 deletion(-)
+
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.dsc b/Platforms/OnePlus/kebabPkg/kebab.dsc
+index 767231c1..68a6bfa8 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.dsc
++++ b/Platforms/OnePlus/kebabPkg/kebab.dsc
+@@ -40,6 +40,11 @@
+   #
+   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
+ 
++  #
++  # Debug: only show errors, so vendor driver messages are not scrolled away
++  #
++  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000000
++
+   #
+   # UEFI Stack
+   #
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index f5d3d525..25e42763 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -37,6 +37,165 @@
+ #include <Library/MemoryAllocationLib.h>
+ #include <Library/RamManagerLib.h>
+ #include <Library/SortLib.h>
++#include <Protocol/Usb2HostController.h>
++#include <Protocol/UsbIo.h>
++#include <Protocol/BlockIo.h>
++#include <Protocol/SimpleFileSystem.h>
++#include <Protocol/PciIo.h>
++#include <Protocol/UsbFunctionIo.h>
++
++STATIC
++VOID
++DumpProtocolCount (
++  IN CONST CHAR8 *Name,
++  IN EFI_GUID    *Guid
++  )
++{
++  EFI_STATUS  Status;
++  EFI_HANDLE *Handles = NULL;
++  UINTN       Count   = 0;
++
++  Status = gBS->LocateHandleBuffer (ByProtocol, Guid, NULL, &Count, &Handles);
++  if (EFI_ERROR (Status)) {
++    Count = 0;
++  }
++
++  DEBUG ((EFI_D_ERROR, "[DIAG] %a = %d\n", Name, (UINT32)Count));
++
++  if (Handles != NULL) {
++    FreePool (Handles);
++  }
++}
++
++STATIC EFI_GUID mUsbfnPrereq[] = {
++  { 0x18A031AB, 0xB443, 0x4D1A, { 0xA5, 0xC0, 0x0C, 0x09, 0x26, 0x1E, 0x9F, 0x71 }},
++  { 0x76B95DAD, 0x1E66, 0x4D98, { 0x9C, 0xE7, 0xB2, 0x94, 0xD9, 0x59, 0x68, 0x95 }},
++  { 0x157A5C45, 0x21B2, 0x43C5, { 0xBA, 0x7C, 0x82, 0x2F, 0xEE, 0x5F, 0xE5, 0x99 }},
++  { 0x665E3FF6, 0x46CC, 0x11D4, { 0x9A, 0x38, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D }},
++  { 0x26BACCB1, 0x6F42, 0x11D4, { 0xBC, 0xE7, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81 }},
++  { 0x26BACCB2, 0x6F42, 0x11D4, { 0xBC, 0xE7, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81 }},
++  { 0x1DA97072, 0xBDDC, 0x4B30, { 0x99, 0xF1, 0x72, 0xA0, 0xB5, 0x6F, 0xFF, 0x2A }},
++  { 0x27CFAC87, 0x46CC, 0x11D4, { 0x9A, 0x38, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D }},
++  { 0x27CFAC88, 0x46CC, 0x11D4, { 0x9A, 0x38, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D }},
++  { 0xB7DFB4E1, 0x052F, 0x449F, { 0x87, 0xBE, 0x98, 0x18, 0xFC, 0x91, 0xB7, 0x33 }},
++  { 0xA46423E3, 0x4617, 0x49F1, { 0xB9, 0xFF, 0xD1, 0xBF, 0xA9, 0x11, 0x58, 0x39 }},
++  { 0x26BACCB3, 0x6F42, 0x11D4, { 0xBC, 0xE7, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81 }},
++  { 0x6441F818, 0x6362, 0x4E44, { 0xB5, 0x70, 0x7D, 0xBA, 0x31, 0xDD, 0x24, 0x53 }},
++  { 0x1E5668E2, 0x8481, 0x11D4, { 0xBC, 0xF1, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81 }},
++  { 0x665E3FF5, 0x46CC, 0x11D4, { 0x9A, 0x38, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D }},
++  { 0xF4E5C7D0, 0xD239, 0x47CB, { 0xAA, 0xCD, 0x7F, 0x66, 0xEF, 0x76, 0x32, 0x38 }}
++};
++
++STATIC
++VOID
++DumpUsbfnPrereq (VOID)
++{
++  EFI_STATUS Status;
++  VOID      *Ifc = NULL;
++  UINT32     Missing = 0;
++
++  for (UINTN i = 0; i < ARRAY_SIZE (mUsbfnPrereq); i++) {
++    Status = gBS->LocateProtocol (&mUsbfnPrereq[i], NULL, &Ifc);
++    if (EFI_ERROR (Status)) {
++      Missing++;
++      DEBUG ((EFI_D_ERROR, "[DBG] USBFN prereq #%d MISSING (%08X-%04X-%04X)\n",
++              (UINT32)i, mUsbfnPrereq[i].Data1, mUsbfnPrereq[i].Data2, mUsbfnPrereq[i].Data3));
++    }
++  }
++
++  DEBUG ((EFI_D_ERROR, "[DBG] USBFN prereq: %d of %d missing\n",
++          Missing, (UINT32)ARRAY_SIZE (mUsbfnPrereq)));
++}
++
++STATIC
++VOID
++DumpUsbCfgCandidates (VOID);
++
++STATIC EFI_GUID mUsbCfgCand[] = {
++  { 0xB898D8DC, 0x080A, 0x40F7, { 0x99, 0xE3, 0x31, 0x62, 0x7B, 0x80, 0x6A, 0x5A }},
++  { 0x0A134F0E, 0x075E, 0x40B3, { 0x9C, 0x63, 0x3B, 0x39, 0x06, 0x80, 0x46, 0x63 }},
++  { 0x27ABF055, 0xB1B8, 0x4C26, { 0x80, 0x48, 0x74, 0x8F, 0x37, 0xBA, 0xA2, 0xDF }},
++  { 0xBEDAEABC, 0x5E70, 0x4D66, { 0x97, 0x33, 0x21, 0x3D, 0x07, 0x2B, 0x9D, 0x04 }},
++  { 0x2DA15AC7, 0x4909, 0x4C4C, { 0xB8, 0xC3, 0xA7, 0x42, 0x19, 0x5E, 0xA4, 0x6E }},
++  { 0xE722B03F, 0xB250, 0x42CE, { 0x8E, 0xBD, 0x5B, 0xD5, 0x18, 0x12, 0xD0, 0x37 }},
++  { 0xD2B2B828, 0x0826, 0x48A7, { 0xB3, 0xDF, 0x98, 0x3C, 0x00, 0x60, 0x24, 0xF0 }}
++};
++
++STATIC
++VOID
++DumpUsbCfgCandidates (VOID)
++{
++  EFI_STATUS Status;
++  VOID      *Ifc = NULL;
++  UINT32     Present = 0;
++
++  for (UINTN i = 0; i < ARRAY_SIZE (mUsbCfgCand); i++) {
++    Status = gBS->LocateProtocol (&mUsbCfgCand[i], NULL, &Ifc);
++    if (!EFI_ERROR (Status)) {
++      Present++;
++      DEBUG ((EFI_D_ERROR, "[USBCFG] cand#%d PRESENT (%08X)\n",
++              (UINT32)i, mUsbCfgCand[i].Data1));
++    }
++  }
++
++  DEBUG ((EFI_D_ERROR, "[USBCFG] %d of %d present\n",
++          Present, (UINT32)ARRAY_SIZE (mUsbCfgCand)));
++}
++
++STATIC
++VOID
++DiagDumpProtocols (VOID);
++
++STATIC
++VOID
++EFIAPI
++DiagTimerNotify (
++  IN EFI_EVENT Event,
++  IN VOID     *Context
++  )
++{
++  gBS->CloseEvent (Event);
++  DEBUG ((EFI_D_ERROR, "\n[DIAG] ==== deferred (post-BDS) ====\n"));
++  DiagDumpProtocols ();
++  DumpUsbfnPrereq ();
++  DEBUG ((EFI_D_ERROR, "[DIAG] ============================\n\n"));
++}
++
++STATIC
++VOID
++DiagArmDeferredDump (VOID)
++{
++  EFI_STATUS Status;
++  EFI_EVENT  Event;
++
++  Status = gBS->CreateEvent (EVT_TIMER, TPL_CALLBACK, DiagTimerNotify, NULL, &Event);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "[DIAG] CreateEvent failed: %r\n", Status));
++    return;
++  }
++
++  // 5 seconds, 100ns units
++  Status = gBS->SetTimer (Event, TimerRelative, 50000000ULL);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "[DIAG] SetTimer failed: %r\n", Status));
++    gBS->CloseEvent (Event);
++  }
++}
++
++STATIC
++VOID
++DiagDumpProtocols (VOID)
++{
++  DEBUG ((EFI_D_ERROR, "\n[DIAG] ---- protocol presence ----\n"));
++  DumpProtocolCount ("USB2_HC  ", &gEfiUsb2HcProtocolGuid);
++  DumpProtocolCount ("USB_IO   ", &gEfiUsbIoProtocolGuid);
++  DumpProtocolCount ("BLOCK_IO ", &gEfiBlockIoProtocolGuid);
++  DumpProtocolCount ("SIMPLE_FS", &gEfiSimpleFileSystemProtocolGuid);
++  DumpProtocolCount ("PCI_IO   ", &gEfiPciIoProtocolGuid);
++  DumpProtocolCount ("QSEECOM  ", &gQcomQseecomProtocolGuid);
++  DumpProtocolCount ("USBFN_IO ", &gEfiUsbFunctionIoProtocolGuid);
++  DEBUG ((EFI_D_ERROR, "[DIAG] ----------------------------\n\n"));
++}
+ 
+ //
+ // Global Variables
+@@ -63,7 +222,7 @@ HandleRamRange (
+   }
+ 
+   // Show Mapped RAM Range
+-  DEBUG ((EFI_D_WARN, "Successfully Mapped RAM Range: 0x%p - 0x%p\n", Base, End));
++  DEBUG ((EFI_D_ERROR, "Successfully Mapped RAM Range: 0x%p - 0x%p\n", Base, End));
+ }
+ 
+ VOID
+@@ -194,6 +353,14 @@ ManageRam (
+   EFI_MEMORY_RANGE *MemoryRange;
+   UINT8             MemoryRangeCount;
+ 
++  // Dump protocol presence (diagnostic for USB / storage bring-up)
++  DiagDumpProtocols ();
++  DumpUsbfnPrereq ();
++  DumpUsbCfgCandidates ();
++
++  // Arm a one-shot dump that fires after BDS has connected all drivers
++  DiagArmDeferredDump ();
++
+   // Get EFI Memory Map
+   Status = GetEfiMemoryMap ();
+   if (EFI_ERROR (Status)) {
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+index 388969bb..1b8ed9cb 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+@@ -13,6 +13,7 @@
+   MdePkg/MdePkg.dec
+   MdeModulePkg/MdeModulePkg.dec
+   SiliciumPkg/SiliciumPkg.dec
++  QcomPkg/QcomPkg.dec
+ 
+ [LibraryClasses]
+   DebugLib
+@@ -23,5 +24,14 @@
+   RamManagerLib
+   SortLib
+ 
++[Protocols]
++  gEfiUsb2HcProtocolGuid
++  gEfiUsbIoProtocolGuid
++  gEfiBlockIoProtocolGuid
++  gEfiSimpleFileSystemProtocolGuid
++  gEfiPciIoProtocolGuid
++  gQcomQseecomProtocolGuid
++  gEfiUsbFunctionIoProtocolGuid
++
+ [Depex]
+   TRUE

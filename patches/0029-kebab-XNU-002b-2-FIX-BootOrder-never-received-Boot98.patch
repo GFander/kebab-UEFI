@@ -1,0 +1,50 @@
+From e264a928aae8927e5e5ed2befa9252b7168c8ffd Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:08:14 +0800
+Subject: [PATCH 29/38] kebab: XNU-002b-2 FIX BootOrder never received Boot9800
+
+Trace from the device finally showed it: after registration Boot9800 reads
+back fine (varSize 60, IsDevicePathValid=1, VariableToLoadOption=Success,
+size predicate passes) but BootOrder still has only 0000..0003.
+
+Cause: XnuMakeLast() only called SetVariable when the number was ALREADY
+present. A brand new option therefore stayed in the local buffer and was
+never appended - while the debug line printed Out (= Count+1) regardless,
+which is why earlier boots looked like '4 -> 5'.
+
+Changed is now true whenever the number is not already the last element,
+so a new option is appended and an existing one is moved to the end.
+---
+ .../Library/BootManagerLib/BootManager.c           | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index c5c2580b..505897fc 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -304,16 +304,20 @@ XnuMakeLast (
+   }
+   for (UINTN i = 0; i < Count; i++) {
+     if (Order[i] == Number) {
+-      Changed = TRUE;
+-      continue;
++      continue;                        // drop from its current position
+     }
+     New[Out++] = Order[i];
+   }
+-  if ((Count == 0) || (Out != Count)) {
+-    Changed = TRUE;
+-  }
+   New[Out++] = Number;
+ 
++  //
++  // Write whenever the number is not already the last element.  The old
++  // condition only fired when the number was ALREADY present, so a brand new
++  // option was built in memory but never stored - while the debug line still
++  // printed Count+1, which is what made the earlier 4->5 report misleading.
++  //
++  Changed = (BOOLEAN) !((Count > 0) && (Order[Count - 1] == Number) && (Out == Count));
++
+   if (Changed) {
+     Status = gRT->SetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid,
+                                EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,

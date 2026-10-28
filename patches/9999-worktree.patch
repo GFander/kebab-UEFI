@@ -1,0 +1,3389 @@
+diff --git a/Binaries b/Binaries
+--- a/Binaries
++++ b/Binaries
+@@ -1 +1 @@
+-Subproject commit c88f2796c4664703e61da9bc7435f77a52a87621
++Subproject commit c88f2796c4664703e61da9bc7435f77a52a87621-dirty
+diff --git a/Mu_Basecore b/Mu_Basecore
+--- a/Mu_Basecore
++++ b/Mu_Basecore
+@@ -1 +1 @@
+-Subproject commit cfb93724a06ff86ff5ba971413368a7809ee42a5
++Subproject commit cfb93724a06ff86ff5ba971413368a7809ee42a5-dirty
+diff --git a/Platforms/OnePlus/kebabPkg/DeviceBuild.py b/Platforms/OnePlus/kebabPkg/DeviceBuild.py
+index c852ab2b..8e6fcdf2 100644
+--- a/Platforms/OnePlus/kebabPkg/DeviceBuild.py
++++ b/Platforms/OnePlus/kebabPkg/DeviceBuild.py
+@@ -25,7 +25,7 @@ from edk2toollib.utility_functions import RunCmd
+ # ####################################################################################### #
+ class CommonPlatform ():
+     PackagesSupported = ("kebabPkg")
+-    ArchSupported = ("AARCH64")
++    ArchSupported = ("AARCH64",)
+     TargetsSupported = ("DEBUG", "RELEASE")
+     Scopes = ('kebab', 'gcc_aarch64_linux', 'edk2-build')
+     WorkspaceRoot = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+diff --git a/Platforms/OnePlus/kebabPkg/Include/APRIORI.inc b/Platforms/OnePlus/kebabPkg/Include/APRIORI.inc
+index 5c3eee43..978f99ea 100644
+--- a/Platforms/OnePlus/kebabPkg/Include/APRIORI.inc
++++ b/Platforms/OnePlus/kebabPkg/Include/APRIORI.inc
+@@ -2,6 +2,10 @@ APRIORI DXE {
+   INF MdeModulePkg/Core/Dxe/DxeMain.inf
+   INF MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
+ 
++  # Publish the firmware log ring before any other driver prints, so the
++  # ring sees the whole DXE log and the RPMh probe's t5 dump lands in it.
++  INF SiliciumPkg/Drivers/KebabFwLogDxe/KebabFwLogDxe.inf
++
+   INF Binaries/kebab/QcomPkg/Drivers/EnvDxe/EnvDxe.inf
+ 
+   INF MdeModulePkg/Universal/ReportStatusCodeRouter/RuntimeDxe/ReportStatusCodeRouterRuntimeDxe.inf
+@@ -23,6 +27,8 @@ APRIORI DXE {
+   INF Binaries/kebab/QcomPkg/Drivers/PwrUtilsDxe/PwrUtilsDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/NpaDxe/NpaDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/RpmhDxe/RpmhDxe.inf
++  # Runs right after RpmhDxe so LocateProtocol succeeds at entry.
++  INF SiliciumPkg/Drivers/KebabRpmhProbeDxe/KebabRpmhProbeDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/PdcDxe/PdcDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/VcsDxe/VcsDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/ClockDxe/ClockDxe.inf
+@@ -41,7 +47,7 @@ APRIORI DXE {
+   INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
+ 
+   INF Binaries/kebab/QcomPkg/Drivers/SdccDxe/SdccDxe.inf
+-  INF Binaries/kebab/QcomPkg/Drivers/UFSDxe/UFSDxe.inf
++  INF SiliciumPkg/Drivers/SmmuEarlyReadDxe/SmmuEarlyReadDxe.inf
+ 
+   INF FatPkg/EnhancedFatDxe/Fat.inf
+ 
+diff --git a/Platforms/OnePlus/kebabPkg/Include/DXE.inc b/Platforms/OnePlus/kebabPkg/Include/DXE.inc
+index 668d2553..8bd148b1 100644
+--- a/Platforms/OnePlus/kebabPkg/Include/DXE.inc
++++ b/Platforms/OnePlus/kebabPkg/Include/DXE.inc
+@@ -56,7 +56,7 @@
+   INF Binaries/kebab/QcomPkg/Drivers/SPIDxe/SPIDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/SPMIDxe/SPMIDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/SdccDxe/SdccDxe.inf
+-  INF Binaries/kebab/QcomPkg/Drivers/UFSDxe/UFSDxe.inf
++  INF SiliciumPkg/Drivers/SmmuEarlyReadDxe/SmmuEarlyReadDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/TLMMDxe/TLMMDxe.inf
+   INF Binaries/kebab/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
+ 
+diff --git a/Platforms/OnePlus/kebabPkg/Library/ConfigurationMapLib/ConfigurationMapLib.c b/Platforms/OnePlus/kebabPkg/Library/ConfigurationMapLib/ConfigurationMapLib.c
+index 3ae28da2..904ee6ee 100644
+--- a/Platforms/OnePlus/kebabPkg/Library/ConfigurationMapLib/ConfigurationMapLib.c
++++ b/Platforms/OnePlus/kebabPkg/Library/ConfigurationMapLib/ConfigurationMapLib.c
+@@ -23,7 +23,7 @@ gConfigurationDescriptor[] = {
+   {"Sdc1GpioConfigOff", 0xA00},
+   {"Sdc2GpioConfigOff", 0xA00},
+   {"EnableSDHCSwitch", 0x1},
+-  {"EnableUfsIOC", 1},
++  {"EnableUfsIOC", 0},
+   {"UfsSmmuConfigForOtherBootDev", 1},
+   {"SecurityFlag", 0xC4},
+   {"EnableLogFsSyncInRetail", 0x0},
+diff --git a/Platforms/OnePlus/kebabPkg/Library/MemoryMapLib/MemoryMapLib.c b/Platforms/OnePlus/kebabPkg/Library/MemoryMapLib/MemoryMapLib.c
+index e0eb2190..c567375b 100644
+--- a/Platforms/OnePlus/kebabPkg/Library/MemoryMapLib/MemoryMapLib.c
++++ b/Platforms/OnePlus/kebabPkg/Library/MemoryMapLib/MemoryMapLib.c
+@@ -25,7 +25,8 @@ gMemoryDescriptor[] = {
+   {"Log Buffer",       0x9FFF7000, 0x00008000, AddMem, SYS_MEM, SYS_MEM_CAP, RtData, WRITE_BACK_XN},
+   {"Info Blk",         0x9FFFF000, 0x00001000, AddMem, SYS_MEM, SYS_MEM_CAP, RtData, WRITE_BACK_XN},
+   {"Kernel",           0xA0000000, 0x10000000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
+-  {"DXE Heap",         0xB0000000, 0x04500000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN},
++  {"Kebab FwLog",      0xF44C0000, 0x00040000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
++  {"DXE Heap",         0xB0000000, 0x044C0000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN},
+ 
+   // Other Memory Regions
+   {"IMEM Base",        0x14680000, 0x00040000, NoHob,  MMAP_IO, INITIALIZED, Conv,   NS_DEVICE},
+diff --git a/Platforms/OnePlus/kebabPkg/UniXNU/UniXNU.efi b/Platforms/OnePlus/kebabPkg/UniXNU/UniXNU.efi
+index 893fa4bd196ad7553f87bdbd49420df8c4a5d047..1ce5cb60ae1bfdcaf4e9b475382ff3d5b5bf85f3 100644
+GIT binary patch
+delta 5990
+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
+Ml>9;VIGbVr3r<i7>i_@%
+
+delta 5866
+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
+
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.dsc b/Platforms/OnePlus/kebabPkg/kebab.dsc
+index 4d7e74dc..32b5a3fa 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.dsc
++++ b/Platforms/OnePlus/kebabPkg/kebab.dsc
+@@ -43,7 +43,9 @@
+   #
+   # Debug: only show errors, so vendor driver messages are not scrolled away
+   #
+-  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000000
++    # Quiet firmware: only the UniXNU menu talks to the panel, so the kernel
++  # log is what the eye lands on. Flip to 0x80000000 to bring DEBUG back.
++  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x00000000
+ 
+   #
+   # UEFI Stack
+@@ -73,6 +75,7 @@
+   gQcomPkgTokenSpaceGuid.PcdPlatformType|"LA"
+ 
+ [LibraryClasses]
++  UefiScsiLib|MdePkg/Library/UefiScsiLib/UefiScsiLib.inf
+   #
+   # Memory Libraries
+   #
+@@ -86,6 +89,14 @@
+ [Components]
+   # Gate XNU-001a-2: RAM FAT test volume (self-contained BlockIo producer)
+   SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
++  # KFLG: reserve the firmware log page
++  SiliciumPkg/Drivers/KebabFwLogDxe/KebabFwLogDxe.inf
++  SiliciumPkg/Drivers/KebabRpmhProbeDxe/KebabRpmhProbeDxe.inf
++  SiliciumPkg/Drivers/XnuPayloadBlockIoDxe/XnuPayloadBlockIoDxe.inf
++  MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
++  MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
++  MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruDxe.inf
++  SiliciumPkg/Drivers/SmmuEarlyReadDxe/SmmuEarlyReadDxe.inf
+   SiliciumPkg/Application/BootToBl/BootToBl.inf
+   #
+   # ACPI Tables
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.fdf b/Platforms/OnePlus/kebabPkg/kebab.fdf
+index 5fbb06be..def58c1f 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.fdf
++++ b/Platforms/OnePlus/kebabPkg/kebab.fdf
+@@ -85,6 +85,10 @@ READ_LOCK_STATUS   = TRUE
+ 
+   # Gate XNU-001a-2: RAM FAT test volume
+   INF SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
++  INF SiliciumPkg/Drivers/KebabFwLogDxe/KebabFwLogDxe.inf
++  INF SiliciumPkg/Drivers/KebabRpmhProbeDxe/KebabRpmhProbeDxe.inf
++  # XnuPayloadBlockIoDxe is started on demand from the RAM FAT
++  # (see XnuUfsBringUp): the UFS partition tree does not exist at DXE dispatch.
+   FILE FREEFORM = 7B1C2A44-5E3D-4F6A-9C11-8E2D4F6A1B23 {
+     SECTION RAW = Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+   }
+@@ -94,6 +98,13 @@ READ_LOCK_STATUS   = TRUE
+     SECTION PE32 = Platforms/OnePlus/kebabPkg/UniXNU/UniXNU.efi
+   }
+ 
++  # XNU loader: DarwinBoot produces gUniXNULoaderProtocolGuid, which UniXNU
++  # dispatches to when an entry of type "xnu" is selected. Built from
++  # github.com/UniXNU/DarwinBoot (DarwinBootPkg/DarwinBoot.dsc).
++  FILE DRIVER = 1B64AF87-8415-4B57-9B16-680D70913B9F {
++    SECTION PE32 = Platforms/OnePlus/kebabPkg/UniXNU/DarwinBoot.efi
++  }
++
+   # RAM Manager
+   INF SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+ 
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+index d355361e..6b36f95c 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/RamManagerDxe/RamManager.c
+@@ -923,6 +923,73 @@ STATIC
+ VOID
+ DiagDumpProtocols (VOID);
+ 
++
++STATIC EFI_GUID mKebabRpmhProtocolGuid = {
++  0xe1d0b573, 0xf29f, 0x495d,
++  { 0x93, 0x52, 0xca, 0x0d, 0xd4, 0x2a, 0x0a, 0x74 }
++};
++
++STATIC
++UINT64
++KebabRvaOf (
++  IN UINT64  Address
++  )
++{
++  EFI_STATUS  Status;
++  UINTN       Count;
++  EFI_HANDLE  *Handles;
++  UINTN       Index;
++  UINT64      Rva = 0;
++
++  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiLoadedImageProtocolGuid,
++                  NULL, &Count, &Handles);
++  if (EFI_ERROR (Status)) {
++    return 0;
++  }
++  for (Index = 0; Index < Count; Index++) {
++    EFI_LOADED_IMAGE_PROTOCOL *Li;
++    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index],
++        &gEfiLoadedImageProtocolGuid, (VOID **)&Li)) || Li == NULL ||
++        Li->ImageBase == NULL) {
++      continue;
++    }
++    if (Address >= (UINT64)(UINTN)Li->ImageBase &&
++        Address < (UINT64)(UINTN)Li->ImageBase + Li->ImageSize) {
++      Rva = Address - (UINT64)(UINTN)Li->ImageBase;
++      break;
++    }
++  }
++  FreePool (Handles);
++  return Rva;
++}
++
++STATIC
++VOID
++KebabDumpRpmh (
++  VOID
++  )
++{
++  EFI_STATUS  Status;
++  VOID        *Interface;
++  UINT64      *Table;
++  UINTN       Index;
++
++  DEBUG ((EFI_D_ERROR, "[KRP] ---- rpmh protocol ----\n"));
++  Status = gBS->LocateProtocol (&mKebabRpmhProtocolGuid, NULL, &Interface);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "[KRP] not found: %r\n", Status));
++    return;
++  }
++  DEBUG ((EFI_D_ERROR, "[KRP] iface=%p rva=%lx\n", Interface,
++    KebabRvaOf ((UINT64)(UINTN)Interface)));
++  Table = (UINT64 *)Interface;
++  for (Index = 0; Index < 24; Index++) {
++    UINT64 Fn = Table[Index];
++    DEBUG ((EFI_D_ERROR, "[KRP] [%u] %p rva=%lx\n", (UINT32)Index,
++      (VOID *)(UINTN)Fn, KebabRvaOf (Fn)));
++  }
++}
++
+ STATIC
+ VOID
+ EFIAPI
+@@ -934,6 +1001,7 @@ DiagTimerNotify (
+   gBS->CloseEvent (Event);
+   DEBUG ((EFI_D_ERROR, "\n[DIAG] ==== deferred (post-BDS) ====\n"));
+   DiagDumpProtocols ();
++  KebabDumpRpmh ();
+   DumpUsbfnPrereq ();
+   DEBUG ((EFI_D_ERROR, "[DIAG] ============================\n\n"));
+ }
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index 87789602cbdf339374cb43628f829a0a09763f89..4f1b72b7c30bdf0c7be95eecbb8da4ec143681e6 100644
+GIT binary patch
+literal 524288
+zcmeEv3tUu3mUrF0Ji74(0`l<D7l_)l?>8MyxZQw)@qrB_nO6XTNc#Zgk<q+t)J#w_
+zvtHv)5|eL5lgt8>?B^PdVP|%O$z;aFnfWxvZ1&svHVv5hP%|?=BONvU{ZHL{;nIL+
+zW;egzx4X1Itb42KoH}*t)H$afx9Y-zT}$&G$XPaf>I`NI5tzxxSV)(^=%4=cvQ)8P
+z*@Fekavoe(AklB3Gk?ZRgnEv_@INO93Ysql_^*<Mdzqzy4QXY=d~5_0q9h?&7GjHp
+zxQl^=24QroFxDqnnJGy!rCbb*FEUN^no=7~lUhwve5PqkoFR#`WN}WBIL|9O8pQdn
+zV&G3=Ity`1AsKQ=R#C_zlr-W$Czt*!Q$5)J|CL+!&UMRLn8P(X{)_CLTjZ|=3-faG
+zkx2P^r-w53JY#toc{#3vynfQ-8GA@g&&<iYuP^*vjQx@^Sd?7nxBA0>4`cZ}eM){-
+zUVi?A`9bApv-Q0R8hjh%z#s<(IWWk9K@JRZV2}fY92n%lAO{9HFvx*H4h(W&kOPAp
+z805ep2L?GX$bmr)402$Q1A`nG<iLM>4h*jU{kIo^K?V$RV2}fY92n%le?tx!HgyK=
+z{|WhT$c@1&4{~6T1A`nG<iH>Y201Xufk6%oa$t}HgB%#-z#s?yYjR-exBv2bZT!nY
+zS#B0%rOo(;$nd+!lBFT0;rzQHHdjsfJQ1OBW`dqg1|a?MBp$RWiy^G2=i^m9y`RvC
+zwomdw#ts^>v@(V-me~5gVr)#G%zt^r)S9x5HH7zj_>Ty}H&c2&@Wg)-V?|S|N{efX
+z8G9uKQS0$X#H_@h;U_aDPgS$AY_O3v;E%!|;Lq@r8Ec)oUd_nsh`Mr~?lEM-Bl5{p
+ztIF0^mZ-(CRzwo-e~drFPiD+zcpZHFPsM?IKWY^VKlU-l844Lo<DtantD$TD87oVu
+z^2O~-q;!eDCw9Nfk?}mA)0K86U1FDp;;X#|{5csr0ye}*TDlZD<_`I^aw8YqHXoDX
+z&p-rYm^9|hr|IGy@}_Bd7o1@~mv`SOzbvWwWof}3amyMV^4Fo`fJVoGJL6>swE7+B
+zso%c2;+dqIOHRAM<3f$ct>7^_9p`cJ)8;d#$h0%~VlyV`>7jUDa0Y4fq({tW_RSN!
+z>mmc*YG@-_gSQeqV6A}N2cGJDDwI_I?$bhcS(A~=3BB?S)b<QCahbYPn`$z`G#O#x
+zX=mz48xECsOXWprT<-3&*(Xn*4UtlR4UkhPz}@WTL#LspKBPQ>%pTf5H9QAghIqqs
+zz-fp#JO?ri@y6%nJ@Jesay~Jw-$>p4N2gE?$1?ASUx}=FGh>QR6q?&aQ!~+O1y6(j
+zcs<c(JbZMB8a}3lwOaV38d_`7wuZL4T^sQJf;Ir34jJ>|h==ZeN;06!3PXFqGOO~S
+z$q%)SE*C}|4Tio>?cH5g*XG^Ee679m#h;<_NL~qVu-qBp2ExCeZQ0G3uw&r7T0a8*
+zzkpA>sSO6kZKx-EvKLQ#)BEqBq3elW{QD2X%WA$MdaJ)7dN+SV^gj6w(fh<VMDOE&
+zHob3a_L1bD<oS;Mw^ftZ*00gmTQ%L@s@iKAeV>J_Jw*P1;PrlJv{hb%ts*+)DAGkq
+zJLD+UC)ljn7t-lG{iN!9$R|guIuJUP;+dA80iNfBJ>&6h>N{&w@v%@fUeZDqroC&S
+ztc7G}2wu`cSqoW+7O#b}7BZho7xQU!>F;f7e%2P>O;-bppG$NWvB)=B`#mb1?J7L!
+zmHkK;kY3Ew$7<;+Ub53hcu9ko27s5^Rd}hre|XlRmESQy`5jvM9sR>g8oV?ByrjWP
+zI=sf0;CjefJ>&uEA#3%J2dIav(IF2&hpf>dYjhO(RJkbfsd8~8?;o444PpLUH-x5J
+zB}};rdwd19IU7Sg78UOIF?K{^>?HG!SCSFBTIVTsp<eeI#`aL27)!YSYH%JoO>u^K
+z-7Ar&ex~d%K)%MraDQiTKITw_aIgD8$~RT^=OCYLm?0mVpqAN?rX-=vWysf<xX2Gb
+z`e2fGCifkZTba@!TAR(U%Klk4=8t|Rw2KMpA5$HCrmi>P9bMexvMT^_w}~;$?P7HE
+zDBzicx*TbrqVT#&DT;Hx*WE70HY0wIG4Bw(^E^IDY1^;nnT$9e@Z7rL1n*@3mArQw
+zsn1-=`-i5R23`il&{J2y&#R!N5xhO{S3=V(&zYKjvQKOZY!;e2H#7X1@GLg9>AaCO
+zKBIoehI!plD69Uf!qeFTI}Be*Y2V6}Hk9o)6Agm00bv`}70>U5vppzNA-ZmIx_+tB
+zHDX-X&2Y5wV`$?HrUWuVPMrk|hRr8Sm{swmFy%AQ`Fr?b_Yq#ae@DlQ=l==3d0<Mp
+zX_3Ei>$tAQtq*m1@N5+<7mA_BcHas-cOwvp1779UV<<ZuJPCJo={&ji9ii!ZiK)rI
+zMr^uK9ny5`u~5(<C;?Fbe^_(V2lei2Vn}oO@Q2>=L^M}j6~*Q+K#Lz~C}Yia&_;fl
+z-VR(2Wvfyg?RCE&2t0R1OlW=(`Y@hdyqq7#4%d&A{bq#Q-;o_Zh1{ejuod>PLSD{T
+zi`~xfK9-GKob-NTdMw+JBMgbS>jn8yZwSlZ{-NyfFgAPpaM^DOVTa9v?696;8{l{6
+zcR|MXJ<K*?>Ltb|0>4FWv0B)M6413h4DX?AMY>=<?=;~(LiW>h8>ImkJ=ft`1`nAp
+z4ee*OPXT|gGj^EEGU9w<T(imKb>EG6nYVR(Gx!63W`Sp!;9UlI=xVz59cR;(Jhff_
+z^<Hz{@o}um3;L{~;)dd{0{M@L2{Sz(I5%~I-qa~<q;&?n)Nm`1Zy$d=v6->Ct4-#e
+zi;FWHg~I4HMSug{%5}6I^<_)aMu#Vy%}WK3KI<UgJi0jv&!(YXH~N_UEdDG>X^y~r
+z){;Gp?P+CQN89JiElH50q=t0f$I{Ury<j23IxNB6-3RVo4mTqRZe?U|xXHnAl3HF$
+z5L~i>Rw{2?FdS3Miv=7T?seyZ-z=IP7V!K9<So$x9Rqn3ikMQqqq)k=SWCT0_Qy1Y
+zHW5F*f3NKSBmz1is_SU^{j&f4m9pb{9P^Kfwe0-eNT%yJv~!B8yX5JLAbZ_bl=s{(
+zWk)^a(SpA^*5D49*an+WzxRdJ<!{vo-X1B5=AEh0Y|odVqX^{`?~q%v|Md9jci&;k
+zS+vJ{?MyKh3yO!zAJ%pB%V_3*bc@Tu@t~bZ-aj#AbUj1zA6uW8F0u`vttBpMU*fqD
+z%%2m^qC8tn4*x9H0-bw!vcPq_PU}IJcY)%Z<aK`zU2)~Bz;mCYADczlaUo7_352l?
+zsUcps-RyPy-epQ^=)T0w0^48?O&mEST6WwuM1IsPu$ehg+Y`+qbJT&J@?m2}jvm4s
+zesO4X;t1xjgfoXZnmOJAk2`0{E$t&@Kg%F}me6b-!CGdaE$T(N#p3&?k!^rC3zi6r
+zbii#ci?id|eopYZ>qXYGJ%u@ZR@vV+68WR$76EjbixOtlN3#}+|5wC&QE!~z20nY;
+zAJO|PwuvDhy`RK;XSD41&O_V~HLiX>+w=kDOJ|#ogMWe1%x`hXo6Psfn^M<}$xF4E
+zha88Edf(1kEbqyVCV|aPu*m-SDRN7CxO_PY{oWkTMs^Bp4)yO;=!q`0<8bt?cq>ze
+zB1{NH{!}%8ot8h_#O5S{rm@Ix{{Fa;@lh<wym@Gzb>g@x7FwTJ3*B2}VTY+~(uXFL
+zC!pL;#8Ww~$;>}&0N96-#~aQLw~6swmzIFPl%LA`WCHU)XkxQT&aR8`_72F`S+whW
+zF4!1qkD-XSGC$c;DWvOYC-`a=;w~H$S^jazSlejX-wrrTFURnA=$m%X!yunep?&8-
+ze?Gw2E(V>}37c&mhPDPSvV}$Oh{~~Krkt6}{4K-L7D)HOHk+f=Jjc+dsIN_goRi-D
+z$FBl$t;w=qf?hl}LH5t!^~h|p+*)$lIt9EB-M;r;)b&%;?P{Ft?;7DelmWVqZE>a%
+zo><^Hj%U(q+t8OOPC&bpUP?|np4bU|ve<Q$+Wq}R$ow36(>#lL=Q-6T_w*0nT*diI
+zuX{53MyE^OME$@CoSh|XlZZOk!+soxTzH}Ly`c44iM;7;lX*=O^z1d16$Y9}CPpG`
+z+rhx+*ycw-_g{a=9G&B!8-9y05jbFjxK8zr<ht=Z>?`Lp_3I?r(I~RnR7a|7{V1wW
+z4D4h2$2#8x)R*emCXQ;JJ(TS^wk4yh4*i|%qMr91w4n(!9=FRaJ7BLU-tq+GZVIac
+zKNDr(^8wxg`o0JLZ-?&c3{&O4QLxSJ94@!`AT!jTI-zIZ1rIx63${;{Td2)!g89Ds
+zsjTInA@}9XHjm;y!gDa(5giV6bi<*K!LG+~-xR*Xt;bAFx3)5+6TEANZoUHFz%uNi
+zw^qYfxCY-KU5Hpy3?5$<&CSr)F(hLWx3v=K;Davm6~=qr{{%iB7rY;u;U};e?9>_f
+z2yfu85i(JZ@P5ea$L+AsR_Hj?Ju{5$X+RqBk!*7w-l<(Fjr!h#p!ECjj<tZpttbO-
+z=jCyrMTNK8XCQ66YM1SrUEa_NdrfwEvB2iR4o8s>Rc?YDpkI<bKL)#94xXEZgqe}R
+zRiA9zX(@i!vDw7@Hux~xS=Zduc<8<aHqv8)P6Urp567*?bU#7$O9{tLlzk5AJ64Ly
+z8u$h2@C#bM4CJpJ|9;{#@C%lBJZbv`^BM*}B^5qF7ijrhwAj~CI^NHTL+w)p^Sty_
+z_)LKS<%yzt0?!7jYthX>z6msDd)B5Aec3nC=lzbi;m_f-sQ%xr$Hb;v=rcX-D0a6a
+z`FrH&>1}yUYs+i>wB@lmUiW=yOW3eo@f~T(N1($89Y<{v16n=~CHarTdpvKq&+v|V
+z9o{pOogz8E^_bC@`UUrq|2fE)I)=8nZc3Qhr1?_K;G6DG`Oq$t&~7`yxBEQhX`6+(
+zHAR{)MSOFDF7#ie6@7zbq7{AbDtK>=WRAEP<|qPx{tfx|jAEyH@d)<()(yz|%m02J
+z?N5i_1|H?ZFD9NGg<Sp^f7ST=7&1K<VJBqGI*e`Dk2a^iZ7pLPoOt#{Fhz`Fd&~>q
+zKPDg@b?Y1{JF=nMz(a-F`RWkoA<oMiuBPj-rK(@5@{)LVeH8Qs>TKkj1fJfGZ+gFa
+z80|$e^c+i@YlD1WPh=y@A>YKq??b-Z!8?+5b$ro#{F;aQMx(y4uZL|+_S1OQhUWsb
+z$&v299oxJVWq5htj^#4)UA&_W4_BjpG|#K1S?w8!zk;$zpY|Q^p=^VG3S_WTq(j6Q
+zjDJw>ao9D|MXEf^Qrc5gpW6IG*?$)JLZMSgZ#R(bLEbIU<($rUXlxtZ+<`x{BK!Bd
+zm_qp|&sOAV7gaoMupfkn@aec@p$8W)x3xDe!b7|Rtr%PM))O>-)%$9nvD#Mg)EB5z
+zi)i9ww)Cf26J-2kk|Zb$K4Cj_BK%E%`pv*|SU%rX0y_2bvqvxTALtO!_eO!<QM}$n
+zGtnYV?K&#K&)g5ZX0#W@F~q4no2@X(>wXk%z^1XospOB!Od*}nINa1lyltAw{0%Nq
+zv0+U1=9Y0?Uw|j?4-fBZoXPxVC?<3945jg2=KmkCgWmyN<#CJr$Km(7@a)38f{c*0
+z&QP*LNY7&)VZTa41M7N|*RNHrp9S^u!dE)GRkish_@XK3-{yEVznlsmDMfBE=7B$i
+zF*bbGAF&oaAG4|X>bIERB3e2jn-=(m@HGy5F^;TDHYpN#P&66i3rdIHvcTW7Af$BC
+zal~uNBWZb#1J)wIuS8!i356fJL3Y?e*&I%bXyQJ~7R<*O=`9)$Iz*SF(ZuE&Y1Z=v
+zQb6+<tv&AQIx3vp?Jh!Hgy@E<9pEL+A5j0V1KwoBlP~pS=sI6=*HOY}L!8bl9j68O
+zI)RthFR3@qTHw4Mgp=q!3q9@yUP)5<VUv3EgM3+?9}S?BcxJZt&O<($o=2Xd@pWtu
+z&$f;Q&uXFH#<JM~=wJc;G94lMi2r$v!Pt=XyMH-??HLooqUuq%4#>cEtGxRxc>C&B
+z;Z*9iCr|reuV8QNsltMt$$xnKG=tyNU{!h1nIZdMc~&?@beJ&Cq<RrA8sANLi}PY!
+z*HItx2pFHdhH|Kk2BhgQTXdMQ<foZ=+qaHE`$6xf;*atX&tFOw9aKjBO6E6V{7mI+
+zU(NjF_flIn0Vjjpv`*+cO7*0AP#vhQR1d0e9qP;5FOrQM0~^0(^JAxf1O5|lDZW=-
+zBKoOIN>5!j^;Z`i##k4~LZ7<4V^ZsKKk9-pJ+I3{ed{6tR_&*8Tn|}q1fJUuevoYb
+zk?2Mnyl_A9`dew8n49wl`}7U-6=#9hJr8hHKdOHRctWyEJTXDH{SbJH#)3x7seOrd
+zN{ch^{8GiUOB?4ymrPfR@AtaL15Z81<PjLRwoyBShubmcrZH_c#=vHbZ)se64*J6^
+zMA$7D%bGE!^`RZ7fL~_Acot)29zPNBjK;It_*J5JjAs*IpBcumH$l^0(C){$eStcr
+zH_$ahN!ssq2fhqEXPzf-!no0Io+WSULS2YQB(w0x{J%yWsn1dzjg3r6pCqdDHgU}j
+z(7)2CuA}us5_Xys;3r_*--+=@msr2|HP}iT)1VCwCN&IEXq?jh?z8am3&x4fEhxXn
+zn8rr%v^NmH2=Qs~;W!RCp2yQ%-fKu(rNLkxH-^SMGZDT7IzK@leJPw>l83YWHnbJd
+z-G#Z-IE=$&lPaqu+q};O={~ZNT=)6H=kfZ2uO`Xs7V$^=rj+V?EAS?jSE`k-(l)HS
+zK2L$R-@*^+t}EunVQ+fs?wz4ndcDu>hJ6IE9A8mbciaX&t~H`NZY|>KRzoJC-^oUr
+zBUOF8Wu@$Q!5-8nXE-Q6;;TBh8ROL<X4r{8WS=gKGM}e0aS{4@-9!Drqd#!?cU*Ub
+z_dbHLEXpSvZg!~U6VKidAulM~20AEBf;^#47n9&`tc2|+zoi3mLHdS#^T1Z|wsV;_
+zv_Fl@;$xW-ZseOhr<)%(okvCC%AsDopQ-#E-s5k2ckDODdxt6{KNSCk7N3nVvroiS
+zD5neZ54z_-_8UdhDIrSbRW|yfo~Ipsi^j?4Qe@2kB{rk)?#uy<`PK+UxV8AS1Uzru
+z3}Ai)^U9D*(y7EBveRT2J4KV@+*ane3*%hL+;udrYnywX&`?D>hVmsL59J#}>EZB&
+z@H`*m_jcIk&M>xO3+4i7?(Mp0w$uEsEu7B{987ARr1@QDd%HjI9JhOzCqn<^^V0R<
+zEWaGMKC4#gp>kZ%Ir>~|rxjy!vQeR`Jv?WXTSUO73*s6dd<ZU|Sf3%^j>94Uag?Lu
+zqxu=~{Q|grV%M8Q2emtgZ=KKE&IG(IfQ>V@t2Dg3T@N9R{K~r_KbdGJ6?Oqn|0&YC
+zWn(;3E+HNMuZrKNuIn5?9$tU66Xxap<PVXrRE#>4-KVxLitIXSBl+ZiGZk~fBG_2r
+z)Rrwm_xcg#`vUc9#Qf|$=(Fo9Llp;bq~STfBu;4*6W_ud(}o7jfqjPd`w8rW-i9vZ
+z>kvorIr0_6SJE*fTn=j}+d%68#7F2_%#n?<KSFg%`8bj0129iwum3>UL~}#DzwmXc
+zIG%4U@_ih}qB>A#8+7t#kgcC+wvF18=G*l4Bwu0{%JovYN1>xp?lF|hd08}yx8sAr
+zSC2ByLhMYv%x+#bgm8W@C)&UxCPOE}zjqZ);Jn&)K&134@{Kwmx8_t;7c^jQkn)q<
+z3hmo47qQ4cY6^TA$Z-9ZWnC(MvMc81R+Bo`>23$PryXc640Yk_c+?Iw7bO2%;LUFO
+zWVNj)f<B3ScC5!GlMnBkq7>JA-HQ-UFrQ(rs#_<^W@VMu?>QeNi&A2IXBc0A-(;Vn
+z0RJ&yZ$AcN-RpTAAI2i;*a!28fS(IK(D;nY80tpjwe}3^f6;uLmIWT^;~w9TuA{Ve
+zNNZnLVUuays}bv8wBAK?Fum%C`Kx1lyzb#BgJ2qA>yN%80&iS1+3wA-dFC-}WW9yW
+zr82Rucd>-cREk00fh|mV1u|}KBApi9{26$3RqGS2&^Hahbrw3p3EFg@F@V0V`~F1{
+zL3uP^%$Vm3QTEFgEnkU>OZWNpagPk$*I9x&0osGd+mEl0>~hHy6=zJH`=7f4&lzda
+z;f>`;VZFx;<*2th4vFnG4yl1{D#H2*ZzG>7`!4|hb<`bew=vgY*D*$o@nih|bMPPi
+z8}mq#@;KIeUW9x@5AFJPhE+)y<1Tow1@b#FA3hs(wEVE}t#o0`nqtg{_#w|UPe8Wq
+z*k4m$Ol<xM%CJo%KF31;Cp3?KpE(-PC;jLze}LQ(pJ<Gu%8n|}?P$X)!1Zcx$aLKc
+zUiWUq@7L@<%}vwznfk^7&HgvS{*&!L!RK#BHIokzZ2$Lb_P-arX8#*u|L+9fpxOU=
+z$W@R1k8OTKK>tSEIrspm54ZcqIg8|2-B*Z%?Wehhf!8sqJ$?rMT*><<%=M~k)HJqd
+z7<1A*3d5K)7xu9{48Ak`X{#b^*qqE#-$gqJ-XCzE^%(L@GGX56NtQ}$&{y)_QP;k2
+zH>Z&yoTB+5ZH{plV_4%)!MX(5Vv^AYD}Tqt#GWf1uBLKRJm$68kpR}NZ&#nLtAXdR
+zmT0$*VO26{JbVrI$rQhHbi;19A2J97cWORss2T&mG%;?AJ6(*q&}wG+jicl=t6$h)
+z!?X1Xw&6Hnt#jB0tl{KaG4I+M#_}PXG3QLM@pYK1L;Cw+Z1#ELOC4J=2{f+}n6hT6
+zZD;n<pS^e<_Q96)^A|lc<kZ3`SZl-@cOmBUE+Brg@J!-n*a#bJ*&p!!M{%hAZLEj8
+zurBq#1QvY}aaQ;p<<Lc!@az*u*waU{4F^yri)Cr-adRH#wE3KMB*JTGzu!I~<h_pe
+z`6HgqLgLOfc>ce5e&&hLyv2C_6wjTYowuP!*nqi@7HUJ1n>HHfV~rFxCnkV+tUD<G
+zfc&3geVce#1RgekujVC@dE23@=Fqy07<;0|WZn@iM(^BbioQU!kv)DKdH0xNcdC05
+z25zg(Uj*WAJ@$6fEfISnwz5+>Ho2)2@&G%m2$I)*ZW3$Cne1$8M_)fTO=x-<a-hoc
+zF)mxT9{afpD+;G*e+Tc^ECK5}OnLcPq3P8ZO-+A`H8k4aLHj&tzX$F6fIWXsUE5dZ
+zORwZ<bL1F@>+`=?Apbsnj49ux+B)xCr7hR%e&#xSschH{$kH6N`4QJ$%60gZus^##
+z-ZEAxUtN<1Ii0=F6nEie&J*aP6{;`v1Yq}sscZhkt6Tld-|9U1-?T;^LVZ`Qud#m;
+zebxo+@6mtk9VmnMm)0be&Z0?*0NGxNvZ!szXJ{8=?0Ub<9KvFP*LJK-xZs0)>icD`
+zVLgC_vcsqGhdI3ypPFJWwCm**B~v*EU9FRqB&_jfqnuCC{z2)xTt#-piF6t1jbZH6
+zdC+nJbv{S!2_JE7temzKfBS@CYxV<oYA8G92?UNjv${NO9sWAeCzx}}2@}`zR;(NJ
+zo-bw4dknN7{i4e^Q)xq;$D^!gzYHAdmFAtr_c@J2+HWA!I)5?Wa;gD7EBv98<mYsx
+zFz#z%e%4+`zJjJhi?Gka2R*CP0k{F$MBQuD2D#zo`|eU{^QJ2MCwbjpeZhUZlhp3C
+zhlqSNj2HNvs~2VH?L+hGn%}i6N%Onj2W&5#uu*Nmsl)tVV_!nOs7`IDQ@d6tFV!bW
+zEvplCu`+ha_eTBRf$E~~L+eu)_-sjwyzUdAr&EkMvDsw4fVRx<MO(u(#fd!cAP>nO
+z$*~vht?&Ozz@93dZmO%^9z-+e$#|7c;=3;U!TfltAAanAnD}w5@fGkQSiY&hyfd6+
+z*>vJ6WSiD4b(!U~7ioP5GF=QgdKUOUHN|q7*3-G1L8fWWbtlp{BV8KG@;67wm%Y%_
+zo5SSGGWyWl=nL;dk9VT(vxl(5O|UEI^QSD(+lM3A;hT`beaY<7R*WYbBjnxLUj>d3
+zOe$c{K{g03eJs0VfxT(|f!vh}dlm5%>mq%60JaHhjHjCLmv3f=?Vg&nop_G$%uc&1
+z4r$(l{<8r6W#344>D?Q^A13dvzoFvaZp1%~T{=hj7s_v?MgcyHy~Xik?1}a0%iB%S
+zJL{pteP~<kTRJ@CR$&@!$f-%UtZB_CV^7r+yNNC{{$jA#AmXXQu06@@l>I4d*B()=
+zBVX@C{R**9%?Ez`bhRgKh$l4-{am54$ky!u&-AiL2hcdIPg##VxtnM-<L@wNiFmK@
+ztvw@A)_c~s4uckwv0&Z6%SPR)Y=-sH;Ie~t=`pMWaGBTpF4Oc1<h>2!(Gh5Gw9AQo
+zMtRrsv`*#vHVk=GTT1&Jt@iWqk5$@?{?N~Qt?}G?4Eyo0&kW-TZEZaaYqH<wYwK6V
+zP{?VB{R>gFUl&bwTATGl-xq^VUC^Os@QTJ-Ts~VhdNEc>f_!$s27eoCafz7I`3O1=
+z{^DVEjW)p!pBLj+8Y{=zKZCse9{k$|pFJCT&C1LdXl^l4@b0DgmRpYn?|pku^XvNB
+z%$_>Xy0Tse6X+K>?L@b6T{)QU{TSOE0o@OP?l{n$$7v>CeiUeq0nO3Phd^g1*5h<K
+z<2aph{o2t!W62b<@8EYz|NOoNeqa3y`0d0#$frT~cR=^sm?s_$+OI*LPUCMS{4Kp5
+z3M1jqLFUt~tV)94_i7%EO=;cS*d{Ud6{sWaLGxl=lHm9Ae6h_Zu<u1go9p;^``pNE
+zx{-pp=YIAlHUN&+D6xO%xt_9U{Yr2D82enUEbLKyvmEV@b>EgkQI~<ed&z(7_K&cK
+zRNq5Dwv*N))itA#W+&#hu3!%-_Kw=&JJ=t9?2~NzXnZ?M9h1^r5UnHVV^W5B;?5E9
+zM}^o3s}QrM6MN8PKKAyyzl}NIc$!}}c|Yu&w=WSU{_-2Q0*C8wh0p74hx_g&usts1
+zL6@#LkMhlsp&{9xv?T)eaX^3F2OT^#o9mzz+0Y&88g^e<COIIRaZT%cB*Q;J+rB!H
+zZGukJ?0br8-;3rcPV8?9gA8Cl=t%2$)lVni`4Oy}C!tQG(QaJcu`f}zBjfm<7(aY!
+z%0qCpwoZFmYa^JWW;pgDp}#cTr}FLuY-r;|c~kjtwu$<^H45`fl#VtgU*%m&$3DUG
+z2-eb{Pubmuy?k7gopfG$h<usGV5pa7$2A&#6P5iluwM@}ZVqEr4E5+$hgO?%4C%*_
+zPHl1;`=V$cCGD+b&RIJ@=3_>-g7$UBWwDVTqdzoa-%_>7xq*Bjn)9&C89vgS#b%}o
+zadz8``ozZJtmOpY8X@-r)&<Np<7QD_tdq99hj`4#ooWbUEm%NS_L!W?k8cHz^j}|t
+zp2c3mTQ{)xrGqKi_-3(ivV8dp_BdOx=1e;FI^=d#X#L(Uv@y-AZUJ4;k9^LE=4<%)
+z6ytt|xwe1#ZOv)a!H<6Fe;NIS<{GFTv~EGVv;}Kie7+NXw-IwiRw3bnfW96d(mJmb
+zFy};e2y;vqwj!<(a|(5cBOC++Ux4FP=P%T`hJDzFaTWR)pG?Ql^K8u1qmTM&Pe}kF
+z#p`gCro&P?;iSAYPf~<(XimfhT|na&b?lMR<i|e3o_)=_Zts}~pngts0W>avd<4n8
+zLn;0a{C~8+*U-;Rm@75*a|!)?2iEn@p|4|4ihXeu_J3nMT8RBl4Ujq7lX3!kd1zcp
+zenBhrDD`*Jb+lIkI@6*0sYW~6n?~xZYysbIVm}+L&8NYhkgg$Gh!^-Cfz~-4<=F34
+z1bS`MZYe!^DIZ@WAEK?1V=lKlA9R>G>7ztyYpNgRqx__^B;f8#U+;Y}M*3cX+~|08
+z`sM(aPGck1AP*;hln9-;8he%Ui3S~JOAv31G#Ux!73c!OtLGsa&BE-6M(8b~vG4ww
+z+w3>N+{{h1Iki2_>(adZ92)Dc6qQdg4`H5yb-#eRwowD!BcX5X#k^K$0CSAcF;EnT
+zzck3pu^d`w!F)0HWB>dL_F`wq4*i>f&IxRV8T;w1ZQ_Ow3&x;WciE1)$`?tWK`*{Q
+z;}y)6WJCYlFtgeJ0>8K1%A(HEJn4q9BTa(9_Y9G}aY1G%p4N>?Ci!~uyR^<OD4)H|
+zlrJIw4VcI5g4|yd$24~tXslbx=iD#4q#4Sypz$TFBfqjtcD%e;b{tqJJ8n#5eyr<6
+z)nh%m3-eIAE-X&N_&OYA(m1qew&MR2Yx0XB_8YJrb->dhj)t!V8y_yW`2Qp~nX#w)
+z+{%Q!4=^qdB(e=-Xk8lnxKnQlD`-vngAv}5sWWyY28hoh_HD;82d!aDz}hv|ow>e;
+zUb4GUmz&TX;H%~b(l<7-&G({ATDSP*a^NVgPmduUQa-XR<Z}}a%=f_e8*TqR@W{Xu
+zh+rE8O53XL2X7ZgH~&xUx$(hQBAJ?mJe?CEPjQT|mGt1Savakr9qV@b-thvg(UT76
+zYwcLuvW14v;(N)lkDPRQC;WxRWbB!Q@3I_ow9tj!`^XzdV%;6_*e}0_=xP|nS_HB^
+z+WNbUcxr!Yd(6A>^-6lL1DzDd5H}Bb%*fv`6ZRUuGNsK#+}n5K8xpMBH_T<5uEW2*
+z0y%gQauTh!=SkX6&{m_Zz4&G;QQ+m#x$>r#nb>a({oaN;wxO=uFqcg4v{p~+hqMm#
+zCieR==>10{5_cX*mK_<RWrs;*b2_lcyk3*{SjY(VAzELDzFT1(i#b5dFAl-jcg^_G
+z%65EXz8ZTPQ!NoYCBgb}cA@Op4*9nU%<+iU&N_~2ywm!L0Gvs!qm|anf#+N(Gy4;9
+z1^FQ62o3M8L`8=Q#?Q<RDm;r-@O@Vd)@Q+cfy-FueXQkm)X9tT+Ym=~(GHnF-;T+K
+zFGAluk!*BsWt(0`zH3|MP4$4c3bAXpV4O<p_j<YAbV?(YAA`=!esIutOr0DDYne}V
+z(`oZYDHDzF4be)9@!dND;{ii{U!=nQEgfEtRA}w98=oAbL>u2(h=Ob2_4JcTMfWIZ
+z5B>dOQo}^W1Df@^kUj0j)f%g;L|QiZeh&3D{{g(mKCo=qFutBXWBXnU@)Hl8=v%bT
+z_Al6@^4HMGIzG~`<$PUyH1`8^Ije-6wIRL^y0o0HiL2@DkXch(0Q*N1c6#7r_|R94
+z>)`@yD3^&M6JK9DfHrb~M(8K#39|jz50EkNysYXI_wPT^JT3W2^eu!>#5^tf*cCAh
+zcB1!K)do4SVw^)Zb~X8OSWB?rdkXq4rU-GgkB!#d&XvH=&0vo6;K%hv%<;v2%yDfw
+zbDY9j0`S9UAsds>TtNDTWDE0Fop019!Y63qbHO(T@?rY!dnVek$Jx%uCEc{EV?Ofp
+zF*juY5^WQJ-%fOUh)&RL2HmN#+q>z$0=n_df#V$L{sJ^#1I<@K^DDh*###kvR_Ckx
+zj!}Z=r-(N45$0kYQRgdY0$)w`Goa~B>`8}A(YFqcMvX4wBk_)Sc?~pO1uX%LPqy@;
+zBf2@Pn~vV|r_j%iRN$aCAp7ctFV@J|oKC_E89I*e_XuUpANv!Yui#t8TQ?ZS&`cqp
+zFv+IMC;49b{+RM)*`Ezx--B;v?D$sa1K>=?cQ;Zf`Jm?J1k{J}6ysYG(#`(^??uVI
+zzb9$NUK6Y_!EcwFdcI}sZ=9z3eMF1yBbjL2VD$S&!WV~slr7})y_UM4MES^vBmane
+zCGwHH_^yonhH|Xw==rvcH0-m}d?^|G87SX1%t=tb#vjRVkuD@WCd>!ucnPO(xSID1
+zE${K)_T=3Xl-G-OQ{!IG5ok+&U#5V09TV)Ph(8){B%+V8p&GsDV>-R2e&}t*Ix@Fc
+zsI$on9QY#~w6E5Owc~QYTUW3R#gGB=xfhepLj9;tdVMfo)U1!)X+2p_*Xuxgi@VdY
+zwtWEdb>LQDHgG#=yxIsGUTA||g1s}-TyNHB#Rr{9HYvihvfJiy-G#Nk380}pgv~At
+zQNID@@p6hHA)Y@MrDFZR!EL$}c#gi`QsKtJw(98#WcRfAG0Mp9=W$%$^ZYDP8LG##
+z(R|OCibqmtE|NcclNB0^sLx5f%+D@@Z=k)uu_w=0WK;fy`U`#EZP=quV_}k289M!n
+z>U(mZ1G*XCcHgZy6YAVof%^=2Uo%(s7bP?0QLOc1Z4!M&9VZsAlpVAd{eP+L5Yk#g
+zB7E@TacW<raiyMjCBCPk{Zr+3xuuz}Q^)r6ol$hN75&WyBTX_wbMV3(8Q&}S=nIKi
+z`S;ZW?oY=!adxZ7bpqkI8#L3N2>2~?)v?jQ>(8~1%Km@AJ^<_wuw!lDq@yE6c@%pA
+z=0o=0#<~;3Jb4%D{wBt-=D#Y$9*x8`J}##T&BaM|>OL9Fd;SD`qkLwJ9m-RVWBe4i
+zItky!6oHpxurHu{T&RtqEYK0xz`r=mJy1X8dxqenTL5pycQ?mD`>0va3!sDc*5G^1
+zJ;zOq&(oV{F+a6$J$(2cU*K+qzBw|(R(}bbH41h*0pGHHjCQ8Ey0!@#t@w`ZG0^&P
+zM8Zzre09ur+=acNR<>ycbYcBzjG>_Kz4$(}0eaMLl{ck}<~8r5|6u*vPQHo_I-sZA
+z2}=D5<}l5}x6UM&kO$i9R1BFo2pW&^Z`~4_e}?@lFPx^iCVb=czYyYEH}uKb1lNOW
+zyfW2*BNsUQpq<)>+T<nRqxw-C){`9dec<m>#u?yc!0WI-1nl--;rlv#>!QbP2YjQ+
+zHupGv&jy=9emeFEw~PQEu-~_3`!tLl=v%gF3{xxcJMryXaNZC-?<6hnB#gz3b%IY%
+zYuUy*f2`LWrhe!|sLxx|Sl2S_0Y3LmbL}+dpl{kpKj=2lxNgNDt2AEVeHZdqJiX2x
+z%ImJK@9B9lPE+*&=7#ih9>~^5{fXvc)OBW#%gfgbp$AeGC-n4Xq}M+g{h~#F!F@jc
+zh21&Te_Pf3%v+Z&miPDCpNM!7^Cv%@gMFqs8lG6xWg(u;ECy>_nEU)c^6o~gS6rJ_
+zzqdeNC&AeSz0OQ9*mLs}<jcXHK5l*y-wJX$>Sccoc_|<I;1N!@l%(=NnyEM~UiU9R
+z19ZN>GdSHhM=3`7&nX@I1N)>G%~9%*ei-SUi|XC9hC^${omg96EXe)~qNTY|h`x{<
+zmHlNZ){wB5ET8gG`ewm=!8dVVqLE(E)};EfJ#$6W=ENJU13yRl2{d4<A=*)|gN*%b
+zNm%~_4K<iMBVASxTCwIvV?_V62=#X5xPy3d^fq{%v%KynG~QTI4<F92Gt%4Jw_?rb
+zfQ$C9fX_7V+CwA5y82@H)xhORmYZy$*uMsTTR@)?ANEq%sV!9=1kLpr)<RnGjWY3s
+zctiVRu*c=#w=)>o&XcsaVHCoTU6Ym3Xd8^9PF{a!vXcG=yTq`5Nc{N->*@_$$Hg`$
+zty1?nWPrA`HKSjovBs|r=}w*=*E}ETok*kg&MDXfFcg2yPYEl2ihVSN9=72}cwRl@
+zhlxA!{wdzq%y=g8H`t5&8vd4Gu4tbyX^j(nq5Y`%Ze%3wSFutY);x9nX9B&q23Q}N
+zEwY$_(uiO5?VMFGT`(PVez^tZh%qb;<8{7n*)KnPovR_9>HvRT_v0I6@HHBHMSNIu
+zrf)3y8YAQtbK!feELvYXKghhA9${0Jq~+*`e^hPzueE%(`{A3LVs?^UzX{qBv6e9#
+zx)N=4@W_Xwl?PxCU_bm{rZfL>_*<QeFh<G4cdRV&!ht-NZ?SE2(;lXmM9U5~LfzNo
+z!`ij=ui1vANS6Oc%(r0A5pVxlz)R<JL?p1e=U^ZCKBlp9+K?u;g79wM&gZ4_@lAc?
+z>#NtKJ!2WR^9%G%FXk&qej<*sQ-$L(P6OX;DRD2_0ec>B35f3$Bbw<O%^l+R5A73U
+ztLCB}FGcUz8#(fYy|bd9-FqJEeDr-`J^Vh}W5uv$ZT)*;1L3bj+rA_|erPWA@k^q7
+zXf_WwtKTGuPaK+#_XXmE^FF|S=fz1hzsxp#kic4o0mlbie?;83#v<=tEDYIsUlLPJ
+zpugbURN$&Tl!P#Xc}Ffz`0nDx!ehI?D~ur>5%-e#<RL6R#n3m1#D||DE*SrBU?&E`
+z9|71C8279`X5R^#PUV7*mr!?_LomkYA)a_n^*n$wI>C3q9$Z{EMzMf@fz4r<Q^a?J
+z-^V!($VcA+p94=V$djs!QAP<r-aB8|v6pNW!Rq-rtOkQQk%NytJ4Q*zo;HFdm@lR=
+z`c5x~aK9uza)@x>NHHm21VWprtiU|xpMp4&wR-W9%jW|7+~={^{y|~;UK%^jh5dQl
+zR5Z_mz4(N~p7Q?Q)ndfX`viRR44u#!!wxSAl^vhQu-T8Z2j`}X(HHRTL;hmKtxk%t
+z7Ygy`TOlXZf2l9y+m=f<=G{FiwtlZo_PRHl5-!w><{h<LUf63D%$GVR;rs-^j}gk}
+zb;37mgC8QoR$dW@*-b+1iILEme-NYX*CsOmAK<^;3@e{^z?5)8&liF8&hKL#B9zUh
+zkm70nj_TckJ^m)7Pa+;7%?25~8G>>Q`6!Pc<7t{-vOFc6x(Gio{d??E;}AaAc5uyx
+z(KNO=_$OhgQqSk|JZWak<uUY)<B&_vZ^$Nn!*d+6Ib{ONKaRG?o~Zj$A)EAlg9Wk)
+zU(Y`UbGJ8{fqsnt{x`}dTH$k$OxlSy!gVctU*eb04R3>AF35Yi2;UC;|1^SKI)Sw&
+zPdMfgu|9_}$836TOPBprZ*!8xE(-BGegV9XiKBKN!QQm1SYz#k|3vx@b6J-<Ap=SH
+z=DJ`AQ!wx1CYhjew!pV8zZpJH$F&vvBo5JB1JeHw$?znaw>MvELwkLR^1gr%PVh#(
+z1^<(`<GG1FZD|rLCmMi<#$P&|5e9SH%CF#4L7!dHd0mvqb=oC40pU{NQUl7g77LfW
+zn1>{ulWdb5lT4F*-vi#x#XId!zaL>4LdrvJWHz+VFyI-eedt@O_tCd)$80+RbIOc%
+z+<v2WH<d@_kSr4~76>ox-9Bx}>FTex@8JElZh|r&=g!zsW}oun1}^U~%Ii;teiJ`1
+z%sT`V=G{$wXpHdqp_jzR@VDtuc4YnTePTit#hZnyLoY?w?+vD9fgsI$9kSD1|Ips@
+ziLqMDQe%3M{K9YOm)<|zhTeApW8|qt@V1by>>Y=5H>$_x?Gra&UJaQu3!_Jxg&m2V
+z;Q8-_w0Y(jFY5Nh<sGP7{fLay)nWVgz9jD0dsA3H?|q@`&1S%y6D=psBmZL9O&U+_
+z5Fg*2j`pJUNx4P-@;uI7$bpWF!1#{7hl()OyWxM@cZd-?3Zvvp1m{8ePj3jPa85(>
+z+bQvBKeT+Xw@?^*;qU%FV)W<Yu;xGJRHRjmWoi7p1|hn+8F@)IRtpg)sH~i*eS23!
+z_Aa3B+5x*bG-9V+h`0dV_~Cibdmgd_I+~B8&;AsDcG$`_$iLWfV(((;i3{law0C$j
+z`v0WNI`>X-$d0vP&+h$J=#IUc>&%y45^D}co1TH*#M}$Y9u1hQ@Hu~kzSGCPfEOgI
+ztF<(eU+OR1ejt7z+wmy!8`}nbU=zVoUm|>j<A!KbIy0Cb^Vz-fhM>O?KkmXBCT!3_
+zvva7DD#Ff4mKXQoOyDM>S(`tv?}F^1{?_g660K`Aqg~X#G(s6YKH^2H-)8JvDgGdU
+zJw~iKCrD<fZ^EZIJj5b9EU-P~??%8z4IL&s8UQ;iR(1@Jk{xUAiOd@@R(3?<JIfsC
+z#)x}lN0dW$yq7f09+o`9zNUDnedrw7F>D6%PmvuXQjvGO><GtLxD;z!=W(_Z=86uM
+zG>lO$VI2B1;Qk!nT>oJ-YxyI-C;bz~wiofeDfJDV$DFs~L_Tj7#7p)2bI=wJ+KA>b
+z@HbSWIRtg#Wfe&Zm4m$nEz|hfcrndU;B_zj?@mytJ%%Hm_(S=r-YWbU+B>~R&riCR
+z@{+G9B0t6+x_^4mCEu;IVeAnQ2mYQg^YcL5&tbRPaApzN82YYgGS+r(2SYyft;hbc
+zdp~zO=Dr&-2I&x)at!wUl{lg4Csy^WKI2~QaU3tLWvFMZ(74_Lf4dWPq<PG9@U<g6
+zMQI<P|DexZD1xs6pOX9W66_n5n+{nMvG!>;%e#+b9WYgD{V;osy!-sS*q0*tE?b_k
+zyl8%+8T<K#=2XE<-~2Sgm*X%N?903bJ)Rzk{g$v5<`C?+1deQsEzbd-U;saw!$h%5
+z9Vp*|y_N)%gz`wYP#WpDB*3CQ5VBJy>{B|X?N0(uhlR-wDamXndil7{e0(oGv%8M*
+zkj5*8*t>^uSbl1Gd77o%)@!_?r+bkuXlb+$mE%AI|Nr>g#!So`>4IutOvZq}FclBB
+zYq5LoMSPcgjO$DYlkb1ZJbof(hU(og#|-&R%oVwX)kh|Un4^-}mdI_9JU;&c%Qkvo
+zu6x<^Wd5Z6cQ1=v#2;Oh!L`ji!w&q7@hRJOjbPsAUFOVfBUtNu=BUVp;mntjIp$mn
+zic0!P41a(6<b)ZBZ+$OvT&7t-I^g+x{8&nFeJ}nV6@R-~Ew|mgMM9O5lTBFX!SA9_
+zU(c9?SgJ3Tb0n0?dwx>-FU_0|_Xj99Cv|L6CNIaNy^l`<UB0Iy$0dPo3LPpPrWt^f
+zei@&>EfV>oTxRol5yQ)Ek>jy}O8RAf7{N)~BDH+qo8<Tv;(z<CNgCZL9N&BK)*1JQ
+z3!p!R;Cy&j>k~N!pv)KT;`Ky1DT|{_R9@_n`$H+5w3y0S_^O%mQRpH%!55dgjV&{y
+zU7Sb{Niv(0&a&Z2TKhCoGhY;lBlN?*1$OVlXjgn_IOCV$p!Z@j)gSN4GZw;PyE;?S
+zwRe|UVBVahaWfu`$1(uYss7tePN4d;$Re|O|DK^tYK?sP6^h>#!TAEYI)V*qP;GX~
+zk7*6wjvW4<KsdXYJmXP#b(r8Ieo%T?mRi0m8=k58QpgNWUu4RPRAgt7DO7(7xAD3}
+z#?JT-(G!_M@&kNP+ak9J&qun#h%Y49+ahPOt&uJaTOr>cL#DLf^cgc}&7L!NUYf({
+z%E-)Gm{(g;QdW)C{@~vO#Z?uaid9lU#hQxB?^j5R)^1u~PMP$C%(As*HD%JmV$a&z
+zsxm{u167`0@!b%v+J_%5tCI37E2X@3#cS7gC*;)>uPu`@`Gp^x4!w+p9>nKus;((p
+z$K$&p+-22eHIln*L#?N(tW-_o|1YU5E|s#Xsw%4tkvSEQ6tDG^O1Z^V#p^&cPb;XX
+zu3f*rvZ}@i?*g<&W}fF!sug~H=%&bJl~jIl=_Y#7f0<>EcuLBG%2)Z3TUA+8R?=PA
+z^4c1y@?l`8uB@#>3vdkgSFWvHS0-gtR#nxmuhEcdkqc|Vu<qZoN@;0Xsi(L*f*yE`
+zR8n4Cv8ty|MCZcF+6p6+n3FfUlv!5cG3F$4)>l?kYxO3aC}>^r`t^_mdeeUS9#C0X
+zt5c}PQbE-<#l89ITw6sv>Yd<R8N_u$kdv`AH;8dCCkylYMiM70ODfm)%AHeDQn_w@
+zagApsB<B9Is%lSV1<NZdsf93ZlJ56Zu0<N67|U>H^n&EnXH}F^bM)pZ30c)6Wu=mB
+zCf2gGUr*$$>D`eUIEkyC4>i)HZVB3>ws@7Ak^w5KD%W|cfwo)Vb8;nTX=xSuA=<v;
+z;kBL;ur@otpSrX8(`HRf&zQGt(u8?q_`N)nSWMjTu~OoMs1(mbtns0Tl!vt6-#qkG
+z`9Hq=&_f5Nq)wW6H(M}F|MiflKaFSOr>8wgZ^P&hlS6plIA#3w+1>xm+&F&vOnOrv
+zf<qnClCp|bHRaL*sc=<pNonCi&&IM+XN{}Yv$nJl5lf3Vde+shb5@slJb5)$5Gxgc
+zEni<!Sz0D7xJN3eS-+yTtZLK3+KLi2HotP!!nMV!02Vx4om*U8onKy6o4FAz&2UTQ
+z#nlq^+dR*zisBko7qLuF_4>8Nn+o;j(&^LUNz!@S>hY*g=``)X*`<<1k9X65S_VV8
+zQ%exH#8a`RtaOQ|x`w~9jLP+!mX@u1pbDL(tV)d|(7dvmUeVt!tE%i3q2VXFD6T5&
+zlZ0}iR7fg3t8~F9>;+{Hdors$kCas{1>e?o7nlp4)-3U?%&CByt0?YHFwmb};_1%L
+z)JEuecUG-)R+W@f53d56?gS84S+&Wz7MCOOj-;n$maVK^rN5vqM3<|wvL+AQg(|Gh
+zFGhz9N_W>*)Bu0KSr$}4&p};~Xxs~Y>N{npH~oE8t*2Cdw^1jOCP>paPFH_3Ql)$D
+zF}!jpxOTRJoMrjTQZ-#ZL9+EgNRRjApP8z{YhcW#0+2C4DLp_ljX*PcfO65%tED7R
+zpkm;RTv%1ML5oYusV1SxTDKl*$(B`7Q?-d}5u4U=rbws&dI3sW81ySxvP7C9Y4ynC
+zW<w>8yRLsGybh`NL|#GLLQhq7jVcnFZtI;6g<4rrYRsU^nX9;(npv&g{oLBxsG`|W
+z|AZ>ZX0y4o@(bL{3iI-v`2~5YHdy_d+G?=wUTUv2t^M=>wIw)RpWK-vTFXuX0|D0~
+zsk~-igQLCSmsPHZi7r_0silUq*&eBc|6os*be+#t6#S2YasWQ3VxUB-7kJYj=7p72
+z>x%nH$t<g`@j$)7hG~TMOBOTAMSu7Q0@mx(9}LK4T6*>R0Wwg1rrhf)E?GmGv2P|d
+z9ku&@aTU~Ne_5y)O&|4zhrZ^XN#7I>#`3ElCK2qDyeelMdSrHSMJfD(ept3DFTcNN
+zw#q#~yeqHY{5B}wM~dP129=R2O@P|STMOqXIE52#>%YOZ-Uq#PTfF&I#TC_%!oIlg
+z1XtP@M5PCYXdSrKCz;nHqjY7T1eO0>KDzx!>H8iy0lEW}Q&C#B5k3X|zVqO+f+>r#
+zobK;Qxz0joNexU`{zg*baFd`pNfnGo=HB`8H!dnGuIf(ggU5Y`bhsVvjoEp@NPy>_
+zdkmIQ%B!hd59<MQTT@lJb}a@ghR1s(B24=Q!@=+E4XEXY|BM2%OLF0VK8(Jt+i+<;
+z+`Y1j8XX}Gqu>(OR7$HbutAzC?GM9OlxoV$q*8TcQT#B>x-`BNIbb5os&#PI178A<
+z8*-SrRDws$o3ga5x}?gpzNWG&LhZ)`v{N2NbR|3&GvFf!UN61}(`0h#p}x^3<AF9f
+ze{F@Q20(hblO+$y0A+qK7*b^@nAF4S96;YKWmS;xAZ1rVQ}(3s0cZ7OG?lS<)(^Zk
+z7|X<f4`NnX(Jv(6qzsi~&gxASB~pHI^_pra>k+h#I!x$O6epPA;M+;LWmTTaQV-zB
+zV;UG@5%LmDaBY^Z^Hjon9T2iV7-EkHCiYQo4*D;1`TDYoehcgtKt4$BQ#rL>6{R%v
+zU$#6~%30PeM*RY4!+(hjDm-p3<Pw;@9Ik1Vr?f1)B&Xux%0A_2jq`A~*gx#4@Kl#W
+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
+zKR*Z{fB*vLCtx2lDd&2uv|y5dO1^0E!kM%EGxY1S#wu~};u-q>N5e-nlNZb`nXeql
+zBg$evRcOqofttBkA3qIPw&=R7vPwO0_YdGz+N1jc_UJygR7rPZ7H{^f6sG6bNajKS
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+zKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~
+z0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**
+z5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0
+z009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{
+z1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0*~0R#|0009IL
+nKmY**5I_I{1Q0*~0R#|0009ILKmY**5I_I{1Q0+Vjlh2b?W-|3
+
+delta 13654
+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
+U^gqAa9kn3i|Kp$2-BFSM4dE%xs{jB1
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+index 16b07b00..ee72538f 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12_dir.py
+@@ -274,8 +274,19 @@ title = "Return to firmware"
+ type = "action"
+ action = "exit"
+ """
++    import os
++    def rd(pth):
++        return open(pth, "rb").read() if os.path.exists(pth) else b""
++
+     tree = {
+-        "EFI": {"UniXNU": {"unixnu.toml": toml, "Payloads": {"HELLO.EFI": payload}}},
++        # The demo configuration is deliberately absent: UniXNU stops at the
++        # first configuration it finds, and the real one lives on the payload
++        # volume in boot_b.
++        "EFI": {"UniXNU": {}},
++        "UFSPT.EFI": rd("Build/kebabPkg/DEBUG_CLANGPDB/AARCH64/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruDxe/DEBUG/UfsPassThruDxe.efi"),
++        "SCSIBUS.EFI": rd("Build/kebabPkg/DEBUG_CLANGPDB/AARCH64/MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe/DEBUG/ScsiBus.efi"),
++        "SCSIDISK.EFI": rd("Build/kebabPkg/DEBUG_CLANGPDB/AARCH64/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe/DEBUG/ScsiDisk.efi"),
++        "XNUPAY.EFI": rd("Build/kebabPkg/DEBUG_CLANGPDB/AARCH64/SiliciumPkg/Drivers/XnuPayloadBlockIoDxe/XnuPayloadBlockIoDxe/DEBUG/XnuPayloadBlockIoDxe.efi"),
+         "XNU-TEST.TXT": (
+             b"XNU-000 RAM FAT probe file.\n"
+             b"Generated for the OnePlus 8T kebab UEFI bring-up.\n"
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index 754a6ea8..11745b40 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -23,6 +23,19 @@
+ #include <Library/BaseMemoryLib.h>
+ #include <Library/DevicePathLib.h>
+ #include <Library/UefiLib.h>
++#include <Protocol/BlockIo.h>
++#include <Protocol/PartitionInfo.h>
++#include <Protocol/UfsDeviceConfig.h>
++#include <IndustryStandard/Ufs.h>
++#include <Protocol/ScsiPassThruExt.h>
++#include <Protocol/SimpleFileSystem.h>
++#include <Guid/FileInfo.h>
++#include <Protocol/UfsHostControllerPlatform.h>
++#include <Protocol/UfsHostController.h>
++#include <Library/CacheMaintenanceLib.h>
++#include <Library/IoLib.h>
++#include <Library/DxeServicesLib.h>
++#include <Library/DxeServicesTableLib.h>
+ #include <Protocol/FirmwareVolume2.h>
+ #include <Guid/GlobalVariable.h>
+ 
+@@ -508,6 +521,252 @@ XnuProbeParse (
+   XnuTraceOrderNums ("after GetLoadOptions probe");
+ }
+ 
++
++//
++// XNU-004 stage 1: UFS + vendor IOMMU observation.
++//
++// Runs from PlatformBootManagerAfterConsole(), i.e. with a live console.  An
++// earlier attempt put this in a DXE driver dispatched from APRIORI and it
++// asserted in Print() because ConOut does not exist yet.
++//
++STATIC EFI_GUID  mSmemGuid = { 0xF4E5C7D0, 0xD239, 0x47CB, { 0xAA, 0xCD, 0x7F, 0x66, 0xEF, 0x76, 0x32, 0x38 } };
++
++STATIC
++UINT32
++XnuRd32 (
++  IN UINTN Addr
++  )
++{
++  return *(volatile UINT32 *)Addr;
++}
++
++STATIC
++VOID
++XnuDumpUfs (
++  VOID
++  )
++{
++  UINTN B = 0x01D84000;
++
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS2] CAP=0x%08x VER=0x%08x AHIT=0x%08x\n",
++          XnuRd32 (B + 0x00), XnuRd32 (B + 0x08), XnuRd32 (B + 0x18)));
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS2] IS=0x%08x IE=0x%08x HCS=0x%08x HCE=0x%08x\n",
++          XnuRd32 (B + 0x20), XnuRd32 (B + 0x24), XnuRd32 (B + 0x30), XnuRd32 (B + 0x34)));
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS2] errPA=0x%08x errDL=0x%08x errN=0x%08x errT=0x%08x errDME=0x%08x\n",
++          XnuRd32 (B + 0x38), XnuRd32 (B + 0x3C), XnuRd32 (B + 0x40), XnuRd32 (B + 0x44), XnuRd32 (B + 0x48)));
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS2] UTRLBA=0x%08x%08x UTRLDBR=0x%08x UTRLRSR=0x%08x UICCMD=0x%08x\n",
++          XnuRd32 (B + 0x54), XnuRd32 (B + 0x50), XnuRd32 (B + 0x58), XnuRd32 (B + 0x60), XnuRd32 (B + 0x90)));
++}
++
++
++STATIC
++VOID
++XnuWalkVa (
++  IN UINT64 Va,
++  IN UINT64 Ttbr0,
++  IN UINT32 Tcr
++  )
++{
++  UINT32 T0Sz  = Tcr & 0x3F;
++  UINT32 Tg0   = (Tcr >> 14) & 0x3;
++  UINTN  Bits  = 64 - T0Sz;
++  UINTN  Levels;
++  UINTN  Level;
++  UINT64 Table;
++
++  if (Tg0 != 0) {                       // only 4K granule (TG0 == 0)
++    DEBUG ((EFI_D_ERROR, "[XNU-WALK] VA=0x%lx TG0=%d not 4K, skip\n", Va, Tg0));
++    return;
++  }
++  if ((Bits < 21) || (Bits > 48)) {
++    DEBUG ((EFI_D_ERROR, "[XNU-WALK] VA=0x%lx T0SZ=%d unsupported\n", Va, T0Sz));
++    return;
++  }
++  Levels = (Bits - 12 + 8) / 9;
++  Level  = 4 - Levels;
++  Table  = Ttbr0 & 0x0000FFFFFFFFF000ULL;
++
++  while (Level <= 3) {
++    UINTN  Shift = 12 + 9 * (3 - Level);
++    UINTN  Index = (UINTN)((Va >> Shift) & 0x1FF);
++    UINT64 *Entry = (UINT64 *)(UINTN)(Table + Index * 8);
++    UINT64  Desc  = *Entry;
++    UINT64  BlockSize;
++
++    if ((Desc & 1) == 0) {
++      DEBUG ((EFI_D_ERROR, "[XNU-WALK] VA=0x%lx L%d idx=%d invalid -> unmapped\n",
++              Va, (UINT32)Level, (UINT32)Index));
++      return;
++    }
++    if ((Desc & 3) == 3) {
++      Table = Desc & 0x0000FFFFFFFFF000ULL;
++      Level++;
++      if (Level > 3) {
++        break;
++      }
++      continue;
++    }
++    BlockSize = 1ULL << (12 + 9 * (3 - Level));
++    {
++      UINT64 Pa = (Desc & 0x0000FFFFFFF00000ULL & ~(BlockSize - 1)) | (Va & (BlockSize - 1));
++      DEBUG ((EFI_D_ERROR, "[XNU-WALK] VA=0x%lx -> PA=0x%lx at L%d (%s)\n",
++              Va, Pa, (UINT32)Level, (Pa == Va) ? "IDENTITY" : "mapped elsewhere"));
++    }
++    return;
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-WALK] VA=0x%lx walk ended without leaf\n", Va));
++}
++
++STATIC
++VOID
++XnuDumpSmmu (
++  VOID
++  )
++{
++  UINTN  Base  = 0x15000000;
++  UINT32 Id0   = XnuRd32 (Base + 0x20);
++  UINT32 Id1   = XnuRd32 (Base + 0x24);
++  UINTN  Shift = (Id1 & (1u << 31)) ? 16 : 12;
++  UINTN  Gr1   = Base + ((UINTN)1 << Shift);
++  UINT32 Groups = Id0 & 0xFF;
++  UINT32 Ctx   = Id1 & 0xFF;
++  UINT32 Valid = 0, Trans = 0, Byp = 0, Flt = 0;
++  UINT32 Shown = 0;
++
++  DEBUG ((EFI_D_ERROR, "[XNU-SMMU2] ID0=0x%08x ID1=0x%08x shift=%d GR1=0x%08x groups=%d ctxBanks=%d\n",
++          Id0, Id1, (UINT32)Shift, (UINT32)Gr1, Groups, Ctx));
++  DEBUG ((EFI_D_ERROR, "[XNU-SMMU2] sCR0=0x%08x GFSR=0x%08x\n", XnuRd32 (Base + 0x00), XnuRd32 (Base + 0x48)));
++
++  for (UINTN i = 0; i < 64; i++) {
++    UINT32 Smr  = XnuRd32 (Base + 0x800 + i * 4);
++    UINT32 S2cr = XnuRd32 (Base + 0xC00 + i * 4);
++    UINT32 Type;
++    if ((Smr & (1u << 31)) == 0) {
++      continue;
++    }
++    Valid++;
++    Type = (S2cr >> 16) & 0x3;
++    if (Type == 0) {
++      Trans++;
++    } else if (Type == 1) {
++      Byp++;
++    } else {
++      Flt++;
++    }
++    if (Shown < 12) {
++      DEBUG ((EFI_D_ERROR, "[XNU-SMMU2] slot %2d SID=0x%04x mask=0x%04x S2CR=0x%08x type=%d cb=%d\n",
++              (UINT32)i, Smr & 0xFFFF, (Smr >> 16) & 0xFFFF, S2cr, Type, S2cr & 0xFF));
++      Shown++;
++    }
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-SMMU2] valid=%d translate=%d bypass=%d fault=%d\n",
++          Valid, Trans, Byp, Flt));
++
++  //
++  // Walk context bank 0: does UFS DMA go through a real translation, or is it
++  // effectively identity?  Read-only, and image A proved reading the SMMU at
++  // this point is safe.
++  //
++  {
++    UINT32 NumPage = 1u << (((Id1 >> 28) & 0x7) + 1);
++    UINTN  Cb      = Base + (((UINTN)NumPage + 0) << Shift);
++    UINT32 Sctlr   = XnuRd32 (Cb + 0x00);
++    UINT32 Tcr     = XnuRd32 (Cb + 0x30);
++    UINT32 Tcr2    = XnuRd32 (Cb + 0x10);
++    UINT32 Mair0   = XnuRd32 (Cb + 0x38);
++    UINT32 Mair1   = XnuRd32 (Cb + 0x3C);
++    UINT64 Ttbr0   = (UINT64)XnuRd32 (Cb + 0x20) | ((UINT64)XnuRd32 (Cb + 0x24) << 32);
++    UINT32 Cbar0   = XnuRd32 (Gr1 + 0x00);
++    UINT32 Cba2r0  = XnuRd32 (Gr1 + 0x800);
++    UINT32 Fsr     = XnuRd32 (Cb + 0x58);
++    UINT32 Far     = XnuRd32 (Cb + 0x60);
++    UINT32 Fsynr0  = XnuRd32 (Cb + 0x68);
++
++    DEBUG ((EFI_D_ERROR, "[XNU-CB0] base=0x%08x SCTLR=0x%08x(M=%d,A=%d) TCR=0x%08x TCR2=0x%08x\n",
++            (UINT32)Cb, Sctlr, Sctlr & 1, (Sctlr >> 1) & 1, Tcr, Tcr2));
++    DEBUG ((EFI_D_ERROR, "[XNU-CB0] TTBR0=0x%016lx MAIR0=0x%08x MAIR1=0x%08x\n",
++            Ttbr0, Mair0, Mair1));
++    DEBUG ((EFI_D_ERROR, "[XNU-CB0] CBAR0=0x%08x type=%d (0=S2_TRANS 1=S1_TRANS_S2_BYPASS) CBA2R=0x%08x\n",
++            Cbar0, (Cbar0 >> 16) & 0x3, Cba2r0));
++    DEBUG ((EFI_D_ERROR, "[XNU-CB0] FSR=0x%08x FAR=0x%08x FSYNR0=0x%08x\n", Fsr, Far, Fsynr0));
++
++    //
++    // If stage 1 is off (M=0) the stream is identity regardless of the tables;
++    // if stage 2 is bypassed as well there is no translation at all.
++    //
++    if ((Sctlr & 1) == 0) {
++      DEBUG ((EFI_D_ERROR, "[XNU-CB0] stage-1 disabled -> UFS DMA uses physical addresses\n"));
++    } else if (Ttbr0 != 0) {
++      DEBUG ((EFI_D_ERROR, "[XNU-CB0] stage-1 enabled, T0SZ=%d TG0=%d -> real page table\n",
++              Tcr & 0x3F, (Tcr >> 14) & 0x3));
++      XnuWalkVa (0x000000009A830000ULL, Ttbr0, Tcr);   // UTRLBA from the controller
++      XnuWalkVa (0x0000000080000000ULL, Ttbr0, Tcr);   // sample DRAM
++      XnuWalkVa (0x00000000B0000000ULL, Ttbr0, Tcr);   // sample high DRAM
++    } else {
++      DEBUG ((EFI_D_ERROR, "[XNU-CB0] stage-1 enabled but TTBR0==0\n"));
++    }
++  }
++}
++
++STATIC
++VOID
++XnuUfsDiag (
++  VOID
++  )
++{
++  EFI_STATUS             Status;
++  VOID                  *Smem = NULL;
++  EFI_HANDLE            *Handles = NULL;
++  UINTN                  Count = 0;
++  EFI_BLOCK_IO_PROTOCOL *Blk;
++
++  {
++    UINT32 V[2];
++    UINTN  Sz = sizeof (V);
++    EFI_GUID Vg = { 0x7B1C2A44, 0x5E3D, 0x4F6A, { 0x9C, 0x11, 0x8E, 0x2D, 0x4F, 0x6A, 0x1B, 0x23 } };
++    if (!EFI_ERROR (gRT->GetVariable (L"XnuSmmuEarlyRead", &Vg, NULL, &Sz, V))) {
++      DEBUG ((EFI_D_ERROR, "[XNU-EARLY] APRIORI read ID0=0x%08x ID1=0x%08x\n", V[0], V[1]));
++    } else {
++      DEBUG ((EFI_D_ERROR, "[XNU-EARLY] no early-read record (driver did not run)\n"));
++    }
++  }
++
++  Status = gBS->LocateProtocol (&mSmemGuid, NULL, &Smem);
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS] SMEM protocol = %r\n", Status));
++
++  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS] BlockIo handles = %d (%r)\n", (UINT32)Count, Status));
++  if (!EFI_ERROR (Status) && (Handles != NULL)) {
++    for (UINTN i = 0; i < Count; i++) {
++      Blk = NULL;
++      if (!EFI_ERROR (gBS->HandleProtocol (Handles[i], &gEfiBlockIoProtocolGuid, (VOID **)&Blk)) &&
++          (Blk != NULL) && (Blk->Media != NULL))
++      {
++        DEBUG ((EFI_D_ERROR, "[XNU-UFS]   [%d] logical=%d blockSize=%d last=%ld\n",
++                (UINT32)i, Blk->Media->LogicalPartition, (UINT32)Blk->Media->BlockSize,
++                (UINT64)Blk->Media->LastBlock));
++      }
++    }
++    FreePool (Handles);
++  }
++
++  {
++    UINT32 V = 0;
++    UINTN  Sz = sizeof (V);
++    EFI_GUID Tg = { 0x6A1F3C58, 0x2E47, 0x4D90, { 0xB3, 0x8C, 0x51, 0x7A, 0xE2, 0x94, 0x0F, 0x6D } };
++    if (!EFI_ERROR (gRT->GetVariable (L"XnuUfsTrace", &Tg, NULL, &Sz, &V))) {
++      DEBUG ((EFI_D_ERROR, "[XNU-UFSTRACE] last step = %d (1=entry 2=utrl-stop 3=utmr-stop 4=polled 5=doorbells 6=pre-install 7=installed 0x100=install-failed)\n", V));
++    } else {
++      DEBUG ((EFI_D_ERROR, "[XNU-UFSTRACE] no marker found\n"));
++    }
++  }
++
++  XnuDumpUfs ();
++  XnuDumpSmmu ();
++  // vendor IOMMU probe removed: it mutates domain state
++
++}
++
+ STATIC
+ VOID
+ XnuRegisterUniXNU (
+@@ -596,11 +855,1228 @@ XnuRegisterUniXNU (
+   FreePool (Dp);
+ }
+ 
++
++//
++// UFS bring-up at BDS.  Doing this here instead of in a DXE driver means the
++// console exists, so every step is visible, and EDK2's UfsPassThru messages
++// reach the screen too.
++//
++#define XNU_UFS_HC_BASE  0x01D84000ULL
++#define XNU_UFS_VERBOSE  0
++
++STATIC EDKII_UFS_HOST_CONTROLLER_PROTOCOL  mXnuUfsHc;
++STATIC EDKII_UFS_HC_PLATFORM_PROTOCOL      mXnuUfsPlat;
++STATIC EFI_HANDLE                          gXnuUfsPassThruImage = NULL;
++
++//
++// All DMA buffers come from this one uncached pool.  Marking arbitrary pages
++// uncached is not safe: the attribute survives FreePages, so once EDK2 reuses
++// the page for ordinary data an unaligned access faults (Device memory forbids
++// it).  Own the memory instead and never hand it back.
++//
++#define XNU_UFS_POOL_PAGES  64
++STATIC EFI_PHYSICAL_ADDRESS  mXnuUfsPoolBase = 0;
++STATIC UINT64                mXnuUfsPoolMap = 0;   // bit set = page in use
++
++//
++// ArmCacheMaintenanceLib implements WriteBackDataCache() as ASSERT(FALSE), so a
++// whole-cache flush is not available.  Remember every CommonBuffer mapping and
++// write those ranges back explicitly at the doorbell.
++//
++
++#pragma pack (1)
++typedef struct {
++  VENDOR_DEVICE_PATH          Vendor;
++  EFI_DEVICE_PATH_PROTOCOL    End;
++} XNU_UFS_DP;
++#pragma pack ()
++
++STATIC XNU_UFS_DP  mXnuUfsDp = {
++  { { HARDWARE_DEVICE_PATH, HW_VENDOR_DP, { (UINT8)sizeof (VENDOR_DEVICE_PATH), (UINT8)(sizeof (VENDOR_DEVICE_PATH) >> 8) } },
++    { 0x3C1E7A54, 0x9D28, 0x4B67, { 0x8E, 0x15, 0xA2, 0x6F, 0x4D, 0x39, 0xC7, 0x10 } } },
++  { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE, { (UINT8)sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
++};
++
++STATIC EFI_STATUS EFIAPI XnuUfsGetBar (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T, UINTN *Bar) { *Bar = (UINTN)XNU_UFS_HC_BASE; return EFI_SUCCESS; }
++STATIC
++VOID *
++XnuUfsPoolAlloc (
++  IN UINTN  Pages
++  )
++{
++  EFI_STATUS  St;
++  VOID        *P;
++
++  if (Pages == 0) {
++    return NULL;
++  }
++
++  if (mXnuUfsPoolBase == 0) {
++    St = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesData, XNU_UFS_POOL_PAGES, &mXnuUfsPoolBase);
++    if (EFI_ERROR (St)) {
++      return NULL;
++    }
++    //
++    // Normal non-cacheable (EFI_MEMORY_WC), not EFI_MEMORY_UC: UC maps to
++    // Device memory, which additionally forbids unaligned accesses.  If the
++    // attribute cannot be set the pool is useless, so give it back.
++    //
++    St = gDS->SetMemorySpaceAttributes (mXnuUfsPoolBase, XNU_UFS_POOL_PAGES * EFI_PAGE_SIZE, EFI_MEMORY_UC);
++    DEBUG ((EFI_D_ERROR, "[XNU-UFSHC] pool %d pages at 0x%lx, set UC = %r\n",
++            XNU_UFS_POOL_PAGES, (UINT64)mXnuUfsPoolBase, St));
++    if (EFI_ERROR (St)) {
++      gBS->FreePages (mXnuUfsPoolBase, XNU_UFS_POOL_PAGES);
++      mXnuUfsPoolBase = 0;
++      return NULL;
++    }
++  }
++
++  if (Pages > XNU_UFS_POOL_PAGES) {
++    return NULL;
++  }
++
++  for (UINTN start = 0; start + Pages <= XNU_UFS_POOL_PAGES; start++) {
++    UINT64 Need = (((UINT64)1 << Pages) - 1) << start;
++    if ((mXnuUfsPoolMap & Need) == 0) {
++      mXnuUfsPoolMap |= Need;
++      P = (VOID *)(UINTN)(mXnuUfsPoolBase + start * EFI_PAGE_SIZE);
++      return P;
++    }
++  }
++  return NULL;
++}
++
++STATIC
++VOID
++XnuUfsPoolFree (
++  IN VOID   *Addr,
++  IN UINTN   Pages
++  )
++{
++  UINTN  Start;
++
++  if ((mXnuUfsPoolBase == 0) || (Addr == NULL) || (Pages == 0) ||
++      (Pages > XNU_UFS_POOL_PAGES) || ((UINTN)Addr < (UINTN)mXnuUfsPoolBase)) {
++    return;
++  }
++  Start = ((UINTN)Addr - (UINTN)mXnuUfsPoolBase) / EFI_PAGE_SIZE;
++  if (Start + Pages > XNU_UFS_POOL_PAGES) {
++    return;
++  }
++  mXnuUfsPoolMap &= ~((((UINT64)1 << Pages) - 1) << Start);
++}
++
++STATIC EFI_STATUS EFIAPI XnuUfsAlloc (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T, EFI_ALLOCATE_TYPE Ty, EFI_MEMORY_TYPE Mt, UINTN Pg, VOID **Ha, UINT64 At)
++{
++  VOID  *P;
++
++  if (Ha == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++  P = XnuUfsPoolAlloc (Pg);
++  if (P == NULL) {
++    DEBUG ((EFI_D_ERROR, "[XNU-UFSHC] Alloc %d page(s) FAILED, map=0x%lx\n", (UINT32)Pg, mXnuUfsPoolMap));
++    return EFI_OUT_OF_RESOURCES;
++  }
++  *Ha = P;
++  return EFI_SUCCESS;
++}
++
++STATIC EFI_STATUS EFIAPI XnuUfsFree (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T, UINTN Pg, VOID *Ha)
++{
++  XnuUfsPoolFree (Ha, Pg);
++  return EFI_SUCCESS;
++}
++
++//
++// Most SCSI buffers do NOT come from our AllocateBuffer: UfsPassThru hands us
++// the caller's buffer (a stack buffer for MODE SENSE, a pool allocation for
++// READ CAPACITY).  Those are cached, and the SMMU being bypassed says nothing
++// about cache coherency.  So bounce them through the non-cacheable pool; that
++// is correct by construction and needs no per-transfer cache maintenance.
++//
++#define XNU_UFS_MAX_MAPS  16
++STATIC struct {
++  VOID   *Host;
++  VOID   *Bounce;     // NULL => mapped in place
++  UINTN   Len;
++  UINT32  Op;
++  UINTN   Pages;
++} mMaps[XNU_UFS_MAX_MAPS];
++STATIC UINTN  mMapsN = 0;
++
++STATIC EFI_STATUS EFIAPI XnuUfsMap (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T, EDKII_UFS_HOST_CONTROLLER_OPERATION Op, VOID *Ha, UINTN *N, EFI_PHYSICAL_ADDRESS *Da, VOID **Mp)
++{
++  if ((Ha == NULL) || (N == NULL) || (Da == NULL) || (Mp == NULL)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  //
++  // CommonBuffer already comes from the non-cacheable pool: the caller keeps
++  // writing into the host pointer and expects the device address to alias it.
++  // Bouncing it would hand the controller a different (empty) buffer.
++  //
++  if (Op == EdkiiUfsHcOperationBusMasterCommonBuffer) {
++    if (mMapsN < XNU_UFS_MAX_MAPS) {
++      mMaps[mMapsN].Host   = Ha;
++      mMaps[mMapsN].Bounce = NULL;
++      mMaps[mMapsN].Len    = *N;
++      mMaps[mMapsN].Op     = (UINT32)Op;
++      mMaps[mMapsN].Pages  = 0;
++      mMapsN++;
++    }
++    *Da = (EFI_PHYSICAL_ADDRESS)(UINTN)Ha;
++    *Mp = Ha;
++    return EFI_SUCCESS;
++  }
++
++  //
++  // CommonBuffer always comes from the pool (Device memory): identity, no
++  // maintenance.  Everything else belongs to the caller and is cacheable, so
++  // clean before the device reads it and invalidate around the device writes.
++  //
++  if (Op == EdkiiUfsHcOperationBusMasterRead) {
++    WriteBackDataCacheRange (Ha, *N);
++  } else if (Op == EdkiiUfsHcOperationBusMasterWrite) {
++    InvalidateDataCacheRange (Ha, *N);
++  }
++
++  if (mMapsN < XNU_UFS_MAX_MAPS) {
++    mMaps[mMapsN].Host   = Ha;
++    mMaps[mMapsN].Bounce = NULL;
++    mMaps[mMapsN].Len    = *N;
++    mMaps[mMapsN].Op     = (UINT32)Op;
++    mMaps[mMapsN].Pages  = 0;
++    mMapsN++;
++  }
++  *Da = (EFI_PHYSICAL_ADDRESS)(UINTN)Ha;
++  *Mp = Ha;
++  return EFI_SUCCESS;
++}
++
++STATIC EFI_STATUS EFIAPI XnuUfsUnmap (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T, VOID *Mp)
++{
++  UINTN  i;
++
++  for (i = 0; i < mMapsN; i++) {
++    if (mMaps[i].Host != Mp) {
++      continue;
++    }
++    if (mMaps[i].Op == (UINT32)EdkiiUfsHcOperationBusMasterWrite) {
++      InvalidateDataCacheRange (mMaps[i].Host, mMaps[i].Len);
++    }
++    mMaps[i] = mMaps[mMapsN - 1];
++    mMapsN--;
++    return EFI_SUCCESS;
++  }
++  return EFI_SUCCESS;
++}
++
++STATIC EFI_STATUS EFIAPI XnuUfsFlush (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T)
++{
++  MemoryFence ();
++  return EFI_SUCCESS;
++}
++STATIC EFI_STATUS EFIAPI XnuUfsRead (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T, EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WIDTH W, UINT64 Off, UINTN Cnt, VOID *Buf)
++{
++  UINTN A = (UINTN)XNU_UFS_HC_BASE + (UINTN)Off;
++  if ((Buf == NULL) || (Cnt == 0) || (Off >= 0x1C000)) return EFI_INVALID_PARAMETER;
++  for (UINTN i = 0; i < Cnt; i++) {
++    switch (W) {
++      case EfiUfsHcWidthUint8:  ((UINT8 *)Buf)[i]  = MmioRead8  (A + i);     break;
++      case EfiUfsHcWidthUint16: ((UINT16 *)Buf)[i] = MmioRead16 (A + i * 2); break;
++      case EfiUfsHcWidthUint32: ((UINT32 *)Buf)[i] = MmioRead32 (A + i * 4); break;
++      case EfiUfsHcWidthUint64: *(UINT64 *)((UINT8 *)Buf + i * 8) = MmioRead64 (A + i * 8); break;
++      default: return EFI_INVALID_PARAMETER;
++    }
++  }
++  return EFI_SUCCESS;
++}
++STATIC EFI_STATUS EFIAPI XnuUfsWrite (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *T, EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WIDTH W, UINT64 Off, UINTN Cnt, VOID *Buf)
++{
++  UINTN A = (UINTN)XNU_UFS_HC_BASE + (UINTN)Off;
++  if ((Buf == NULL) || (Cnt == 0) || (Off >= 0x1C000)) return EFI_INVALID_PARAMETER;
++  for (UINTN i = 0; i < Cnt; i++) {
++    switch (W) {
++      case EfiUfsHcWidthUint8:  MmioWrite8  (A + i,     ((UINT8 *)Buf)[i]);  break;
++      case EfiUfsHcWidthUint16: MmioWrite16 (A + i * 2, ((UINT16 *)Buf)[i]); break;
++      case EfiUfsHcWidthUint32:
++        if (((Off == 0x50) || (Off == 0x54) || (Off == 0x58) || (Off == 0x60) ||
++             (Off == 0x70) || (Off == 0x74) || (Off == 0x78) || (Off == 0x80) || (Off == 0x90))) {
++        }
++        //
++        // The doorbell is the "DMA may start now" signal.  Everything the CPU
++        // wrote into the rings and descriptors must be visible in memory
++        // before we poke it, otherwise the controller reads stale data.
++        //
++        if ((Off == 0x58) || (Off == 0x78)) {
++          MemoryFence ();
++        }
++        MmioWrite32 (A + i * 4, ((UINT32 *)Buf)[i]);
++        break;
++      case EfiUfsHcWidthUint64: MmioWrite64 (A + i * 8, *(UINT64 *)((UINT8 *)Buf + i * 8)); break;
++      default: return EFI_INVALID_PARAMETER;
++    }
++  }
++  return EFI_SUCCESS;
++}
++//
++// UIC command over the host controller registers (UFS 2.0 5.3).  Returns the
++// UIC result code (0 = success) and, for DME_GET, the value in *OutArg3.
++//
++STATIC UINT32
++XnuUicCmd (
++  UINT32  Opcode,
++  UINT32  Arg1,
++  UINT32  Arg2,
++  UINT32  Arg3,
++  UINT32  *OutArg2,
++  UINT32  *OutArg3
++  )
++{
++  UINTN   Base = (UINTN)XNU_UFS_HC_BASE;
++  UINT32  Is, V;
++  UINTN   i;
++
++  Is = MmioRead32 (Base + 0x20);
++  if ((Is & BIT10) != 0) {
++    MmioWrite32 (Base + 0x20, BIT10);
++  }
++  for (i = 0; i < 10000; i++) {
++    if ((MmioRead32 (Base + 0x30) & BIT3) != 0) {
++      break;
++    }
++    gBS->Stall (1);
++  }
++  MmioWrite32 (Base + 0x94, Arg1);
++  MmioWrite32 (Base + 0x98, Arg2);
++  MmioWrite32 (Base + 0x9C, Arg3);
++  MmioWrite32 (Base + 0x90, Opcode);
++  for (i = 0; i < 10000; i++) {
++    if ((MmioRead32 (Base + 0x20) & BIT10) != 0) {
++      break;
++    }
++    gBS->Stall (1);
++  }
++  V = MmioRead32 (Base + 0x98);
++  if (OutArg2 != NULL) {
++    *OutArg2 = V;
++  }
++  if (OutArg3 != NULL) {
++    *OutArg3 = MmioRead32 (Base + 0x9C);
++  }
++  MmioWrite32 (Base + 0x20, BIT10);
++  return V & 0xFF;
++}
++
++/**
++  Move the UFS link from PWM to HS.
++
++  EDK2 never negotiates a gear: it runs link startup and leaves whatever the
++  bootloader set, which on kebab is PWM, ~0.5 MB/s.  The device rejects most
++  combinations outright; the one it accepts is HS-G3, one lane, UniPro series
++  B, with PA_TxHSAdaptType = 3 (no adaptation).  Two lanes never complete the
++  transition, series A produces Check Condition on every read, and adapt
++  types 1 are rejected with 0x2.
++
++  Measured result: 0.5 MB/s -> 421 MB/s with 256 KiB reads.
++**/
++STATIC
++VOID
++XnuUfsGearNegotiate (
++  VOID
++  )
++{
++  UINT32  R2, R3, Is, Hcs;
++  UINTN   Base = (UINTN)XNU_UFS_HC_BASE;
++
++  // The device reference clock output must be on before HS (REG_UFS_CFG1.26).
++  MmioWrite32 (Base + 0xDC, MmioRead32 (Base + 0xDC) | BIT26);
++  (VOID)MmioRead32 (Base + 0xDC);
++  gBS->Stall (1);
++
++  MmioWrite32 (Base + 0x20, 0x410);                 // clear UCCS | UPMS
++
++  // PA_RxTermination, PA_TxTermination, PA_HSSeries = B
++  XnuUicCmd (2, 0x15840000U, 0, 1, &R2, &R3);
++  XnuUicCmd (2, 0x15690000U, 0, 1, &R2, &R3);
++  XnuUicCmd (2, 0x156A0000U, 0, 2, &R2, &R3);
++  // PA_RxGear, PA_TxGear = 3
++  XnuUicCmd (2, 0x15830000U, 0, 3, &R2, &R3);
++  XnuUicCmd (2, 0x15680000U, 0, 3, &R2, &R3);
++  // PA_ActiveRxDataLanes, PA_ActiveTxDataLanes = 1
++  XnuUicCmd (2, 0x15800000U, 0, 1, &R2, &R3);
++  XnuUicCmd (2, 0x15600000U, 0, 1, &R2, &R3);
++  // PA_TxHSAdaptType = 3 (PA_NO_ADAPT)
++  XnuUicCmd (2, 0x15D40000U, 0, 3, &R2, &R3);
++
++  // PA_PwrMode = 0x11: RX FAST | TX FAST
++  XnuUicCmd (2, 0x15710000U, 0, 0x11, &R2, &R3);
++
++  Is  = MmioRead32 (Base + 0x20);
++  Hcs = MmioRead32 (Base + 0x30);
++  MmioWrite32 (Base + 0x20, 0x410);
++
++  DEBUG ((EFI_D_ERROR, "[XNU-GEAR] HS transition rc=0x%x UPMS=%d UPMCRS=%d\n",
++          (UINT32)(R2 & 0xFF), (UINT32)((Is >> 4) & 1), (UINT32)((Hcs >> 8) & 7)));
++}
++
++STATIC EFI_STATUS EFIAPI XnuUfsOvr (EFI_HANDLE H, EDKII_UFS_HC_INFO *I) { return EFI_SUCCESS; }
++STATIC EFI_STATUS EFIAPI XnuUfsCb (EFI_HANDLE H, EDKII_UFS_HC_PLATFORM_CALLBACK_PHASE P, VOID *D)
++{
++  switch (P) {
++    case EdkiiUfsHcPreHce:         DEBUG ((EFI_D_ERROR, "[XNU-UFSCB] PreHce\n"));         break;
++    case EdkiiUfsHcPostHce:        DEBUG ((EFI_D_ERROR, "[XNU-UFSCB] PostHce\n"));        break;
++    case EdkiiUfsHcPreLinkStartup: DEBUG ((EFI_D_ERROR, "[XNU-UFSCB] PreLinkStartup\n")); break;
++    case EdkiiUfsHcPostLinkStartup:
++      DEBUG ((EFI_D_ERROR, "[XNU-UFSCB] PostLinkStartup\n"));
++      // negotiate after init: switching gear here breaks the unit descriptor
++      // reads that EDK2 performs immediately afterwards.
++      break;
++    default: break;
++  }
++  return EFI_SUCCESS;
++}
++
++
++//
++// UfsPassThruDxe and the SCSI drivers have a DEPEX on protocols that only
++// appear when we install them at BDS, i.e. after the DXE dispatcher has
++// finished.  They are therefore still sitting in the FV, unloaded.  Pull them
++// out and start them by hand so they run with a live console and we can see
++// their diagnostics.
++//
++
++
++//
++// The three EDK2 drivers live in our own FAT volume (the FV search cannot see
++// them: they sit in the inner decompressed FV which is not exposed as an FV
++// protocol handle).  Read them from the volume and start them here, with the
++// console alive.
++//
++
++//
++// LoadImage rejects a NULL ParentImageHandle, so hand it a real loaded image.
++//
++STATIC
++EFI_HANDLE
++XnuParentImage (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  EFI_HANDLE *H = NULL;
++  UINTN       N = 0;
++  EFI_HANDLE  Pick = NULL;
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiLoadedImageProtocolGuid, NULL, &N, &H);
++  if (!EFI_ERROR (St) && (H != NULL) && (N > 0)) {
++    Pick = H[0];
++    FreePool (H);
++  }
++  return Pick;
++}
++
++STATIC
++EFI_STATUS
++XnuLoadVolumeDriver (
++  IN CONST CHAR16  *Path
++  )
++{
++  EFI_STATUS                       St;
++  EFI_HANDLE                      *Handles = NULL;
++  UINTN                            Count = 0;
++  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs;
++  EFI_FILE_PROTOCOL               *Root;
++  EFI_FILE_PROTOCOL               *File;
++  EFI_FILE_INFO                   *Info;
++  UINTN                            InfoSize;
++  VOID                            *Buf = NULL;
++  UINTN                            Size = 0;
++  EFI_HANDLE                       Img = NULL;
++  UINTN                            ExitSize = 0;
++  CHAR16                          *ExitData = NULL;
++  EFI_HANDLE                       Parent;
++
++  Parent = XnuParentImage ();
++  
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL, &Count, &Handles);
++  if (EFI_ERROR (St) || (Handles == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[XNU-UFSBU]   no SimpleFileSystem (%r)\n", St));
++    return St;
++  }
++
++  for (UINTN i = 0; i < Count; i++) {
++    Sfs = NULL;
++    if (EFI_ERROR (gBS->HandleProtocol (Handles[i], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Sfs)) || (Sfs == NULL)) {
++      continue;
++    }
++    Root = NULL;
++    if (EFI_ERROR (Sfs->OpenVolume (Sfs, &Root)) || (Root == NULL)) {
++      continue;
++    }
++    File = NULL;
++    St   = Root->Open (Root, &File, (CHAR16 *)Path, EFI_FILE_MODE_READ, 0);
++    if (EFI_ERROR (St) || (File == NULL)) {
++      Root->Close (Root);
++      continue;
++    }
++
++    InfoSize = 0;
++    St = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, NULL);
++    if (St != EFI_BUFFER_TOO_SMALL) {
++      File->Close (File); Root->Close (Root); continue;
++    }
++    Info = AllocatePool (InfoSize);
++    St = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, Info);
++    if (EFI_ERROR (St)) {
++      FreePool (Info); File->Close (File); Root->Close (Root); continue;
++    }
++    Size = (UINTN)Info->FileSize;
++    FreePool (Info);
++
++    Buf = AllocatePool (Size);
++    if (Buf != NULL) {
++      St = File->Read (File, &Size, Buf);
++      if (!EFI_ERROR (St) && (Size > 0)) {
++        DEBUG ((EFI_D_ERROR, "[XNU-UFSBU]   %s: read %d bytes from volume %d\n", Path, (UINT32)Size, (UINT32)i));
++        St = gBS->LoadImage (FALSE, Parent, NULL, Buf, Size, &Img);
++        DEBUG ((EFI_D_ERROR, "[XNU-UFSBU]   LoadImage  = %r img=%p\n", St, Img));
++        if (!EFI_ERROR (St) && (StrCmp ((CHAR16 *)Path, L"\\UFSPT.EFI") == 0)) {
++          gXnuUfsPassThruImage = Img;
++        }
++        if (!EFI_ERROR (St)) {
++          St = gBS->StartImage (Img, &ExitSize, &ExitData);
++          DEBUG ((EFI_D_ERROR, "[XNU-UFSBU]   StartImage = %r\n", St));
++        }
++      }
++      FreePool (Buf);
++    }
++    File->Close (File);
++    Root->Close (Root);
++    FreePool (Handles);
++    return St;
++  }
++
++  FreePool (Handles);
++  DEBUG ((EFI_D_ERROR, "[XNU-UFSBU]   %s: not found on any volume\n", Path));
++  return EFI_NOT_FOUND;
++}
++
++
++//
++// The vendor HALIOMMU must give the UFS streams a domain before the controller
++// starts DMA.  Leaving S2CR at TRANSLATE with a context bank whose stage-1 is
++// disabled makes the first transfer fault (SError).
++//
++STATIC EFI_GUID  mXnuHalIommuGuid = { 0x54B6D3B4, 0x5D33, 0x4F91, { 0x86, 0x00, 0x6C, 0x41, 0xD5, 0xDE, 0xB1, 0x9A } };
++
++typedef EFI_STATUS (EFIAPI *XNU_HAL_GET_OPS)(VOID ***Ops);
++typedef EFI_STATUS (EFIAPI *XNU_HAL_CREATE)(VOID **Dom);
++typedef EFI_STATUS (EFIAPI *XNU_HAL_CONFIG)(VOID *Dom, UINT32 Mode);
++typedef EFI_STATUS (EFIAPI *XNU_HAL_ATTACH)(VOID *Dom, CHAR8 *Name, UINT32 Arid, UINT32 Arg);
++
++STATIC
++VOID
++XnuUfsIommuSetup (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  VOID        *Iface = NULL;
++  VOID        **Ops = NULL;
++  VOID        *Dom = NULL;
++
++  St = gBS->LocateProtocol (&mXnuHalIommuGuid, NULL, &Iface);
++  DEBUG ((EFI_D_ERROR, "[XNU-IOMMU] locate=%r iface=%p\n", St, Iface));
++  if (EFI_ERROR (St) || (Iface == NULL)) {
++    return;
++  }
++
++  St = ((XNU_HAL_GET_OPS)((VOID **)Iface)[1])(&Ops);
++  DEBUG ((EFI_D_ERROR, "[XNU-IOMMU] getops=%r ops=%p\n", St, Ops));
++  if (EFI_ERROR (St) || (Ops == NULL)) {
++    return;
++  }
++
++  St = ((XNU_HAL_CREATE)Ops[0])(&Dom);
++  DEBUG ((EFI_D_ERROR, "[XNU-IOMMU] create=%r dom=%p\n", St, Dom));
++  if (EFI_ERROR (St) || (Dom == NULL)) {
++    return;
++  }
++
++  St = ((XNU_HAL_CONFIG)Ops[8])(Dom, 0);
++  DEBUG ((EFI_D_ERROR, "[XNU-IOMMU] configure(mode0) raw=0x%x\n", (UINT32)St));
++
++  St = ((XNU_HAL_ATTACH)Ops[2])(Dom, "\\_SB_.UFS0", 0x00, 0);
++  DEBUG ((EFI_D_ERROR, "[XNU-IOMMU] attach ARID 0x00 raw=0x%x\n", (UINT32)St));
++
++  St = ((XNU_HAL_ATTACH)Ops[2])(Dom, "\\_SB_.UFS0", 0x10, 0);
++  DEBUG ((EFI_D_ERROR, "[XNU-IOMMU] attach ARID 0x10 raw=0x%x\n", (UINT32)St));
++}
++
++
++//
++// Read the GPT straight off the UFS disk.  This is the point of the whole
++// exercise: proving we can see the real partitions.
++//
++
++//
++// Read the first block of a named partition and show its magic.  The GPT only
++// proves we can parse metadata; this proves we can read payload bytes.
++//
++//
++// Print every GPT entry whose name contains one of the interesting substrings.
++// Exact-name lookups already failed, so this rules out naming differences.
++//
++//
++// Gate-LU-Inventory: unit descriptors + every BlockIo handle, classified.
++// Raw LU handles have LogicalPartition = FALSE; GPT partitions have TRUE and
++// carry an EFI_PARTITION_INFO_PROTOCOL with the partition name.
++//
++//
++// Read the first block of a named GPT partition and show its magic.
++//
++
++//
++// One-line-per-item summary.  Records gXnuUfsBootBBlocks so the
++// loader can use boot_b later without re-walking the GPT.
++//
++STATIC UINT64  gXnuUfsBootBBlocks = 0;
++
++//
++// Payload container inside boot_b.
++//
++// boot_b layout (measured with avbtool on our own image):
++//   0x000000 .. 0x71C000   boot image + kernel + ramdisk  (AVB hashes exactly this)
++//   0x71C000 .. 0x71C540   embedded vbmeta
++//   0x71C540 .. 0x5FFFFC0  zero, NOT hashed  <-- payload lives here
++//   0x5FFFFC0 .. end       AVB footer, must never be touched
++//
++#define XNU_PAYLOAD_BASE     0x00800000ULL          // 8 MiB, 1 MiB aligned
++#define XNU_PAYLOAD_MAX      0x05600000ULL          // ~86 MiB, stops before the footer
++#define XNU_PAYLOAD_MAGIC    "XNUPAY01"
++
++#pragma pack(1)
++typedef struct {
++  CHAR8   Magic[8];
++  UINT32  Version;
++  UINT32  HeaderSize;
++  UINT64  Generation;
++  UINT64  KernelOffset;
++  UINT64  KernelLength;
++  UINT64  RamdiskOffset;
++  UINT64  RamdiskLength;
++  UINT32  KernelCrc32;
++  UINT32  RamdiskCrc32;
++  UINT32  HeaderCrc32;       // over the header with this field zeroed
++  UINT8   Reserved[512 - 68];
++} XNU_PAYLOAD_HEADER;
++#pragma pack()
++
++STATIC EFI_BLOCK_IO  *mXnuUfsBootB = NULL;
++
++STATIC
++VOID
++XnuUfsDumpLus (
++  VOID
++  )
++{
++  EFI_STATUS                      St;
++  EFI_UFS_DEVICE_CONFIG_PROTOCOL  *Cfg = NULL;
++
++  St = gBS->LocateProtocol (&gEfiUfsDeviceConfigProtocolGuid, NULL, (VOID **)&Cfg);
++  if (EFI_ERROR (St) || (Cfg == NULL)) {
++    return;
++  }
++  for (UINT8 i = 0; i < 8; i++) {
++    UFS_UNIT_DESC  D;
++    UINT32         Sz = sizeof (D);
++
++    ZeroMem (&D, sizeof (D));
++    if (EFI_ERROR (Cfg->RwUfsDescriptor (Cfg, TRUE, UfsUnitDesc, i, 0, (UINT8 *)&D, &Sz))) {
++      continue;
++    }
++    if (D.LunEn != 1) {
++      continue;
++    }
++    DEBUG ((EFI_D_ERROR, "[XNU-UFS] LU%d boot=%d wp=%d mem=0x%x blocks=0x%lx x %dB\n",
++            i, D.BootLunId, D.LunWriteProt, D.MemType,
++            SwapBytes64 (D.LogicBlkCount),
++            (D.LogicBlkSize < 63) ? (UINT32)(1U << D.LogicBlkSize) : 0));
++  }
++}
++
++STATIC
++BOOLEAN
++XnuUfsPayloadCheck (
++  VOID
++  )
++{
++  XNU_PAYLOAD_HEADER  Hdr;
++  UINT8               *Raw;
++  UINTN               Bs;
++  UINT64              Lba;
++  EFI_STATUS          St;
++  XNU_PAYLOAD_HEADER  Copy;
++  UINT32              Crc;
++
++  if (mXnuUfsBootB == NULL) {
++    DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] boot_b not found, skipping\n"));
++    return FALSE;
++  }
++  Bs  = mXnuUfsBootB->Media->BlockSize;
++  Lba = XNU_PAYLOAD_BASE / Bs;
++
++  Raw = AllocatePool (Bs);
++  if (Raw == NULL) {
++    return FALSE;
++  }
++  St = mXnuUfsBootB->ReadBlocks (mXnuUfsBootB, mXnuUfsBootB->Media->MediaId, Lba, Bs, Raw);
++  if (EFI_ERROR (St)) {
++    DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] read header = %r\n", St));
++    FreePool (Raw);
++    return FALSE;
++  }
++  CopyMem (&Hdr, Raw, sizeof (Hdr));
++  FreePool (Raw);
++
++  if (CompareMem (Hdr.Magic, XNU_PAYLOAD_MAGIC, 8) != 0) {
++    DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] no payload (magic=\"%a\")\n", Hdr.Magic));
++    return FALSE;
++  }
++  if ((Hdr.Version != 1) || (Hdr.HeaderSize != sizeof (Hdr))) {
++    DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] bad header ver=%d size=%d\n", Hdr.Version, Hdr.HeaderSize));
++    return FALSE;
++  }
++
++  CopyMem (&Copy, &Hdr, sizeof (Copy));
++  Copy.HeaderCrc32 = 0;
++  Crc = CalculateCrc32 (&Copy, sizeof (Copy));
++  if (Crc != Hdr.HeaderCrc32) {
++    DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] header CRC mismatch (0x%x != 0x%x)\n", Crc, Hdr.HeaderCrc32));
++    return FALSE;
++  }
++
++  DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] container OK gen=%ld\n", Hdr.Generation));
++  DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] kernel  off=0x%lx len=0x%lx crc=0x%x\n",
++          Hdr.KernelOffset, Hdr.KernelLength, Hdr.KernelCrc32));
++  DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] ramdisk off=0x%lx len=0x%lx crc=0x%x\n",
++          Hdr.RamdiskOffset, Hdr.RamdiskLength, Hdr.RamdiskCrc32));
++
++  //
++  // Verify both blobs by reading them back through the same path.
++  //
++  for (UINTN which = 0; which < 2; which++) {
++    UINT64  Off = (which == 0) ? Hdr.KernelOffset  : Hdr.RamdiskOffset;
++    UINT64  Len = (which == 0) ? Hdr.KernelLength  : Hdr.RamdiskLength;
++    UINT32  Want = (which == 0) ? Hdr.KernelCrc32  : Hdr.RamdiskCrc32;
++    UINT8   *Buf;
++    UINTN   Pages;
++
++    if ((Len == 0) || (Off + Len > XNU_PAYLOAD_MAX)) {
++      DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] %a out of range\n", (which == 0) ? "kernel" : "ramdisk"));
++      return FALSE;
++    }
++    Pages = EFI_SIZE_TO_PAGES ((UINTN)Len);
++    Buf   = AllocatePages (Pages);
++    if (Buf == NULL) {
++      return FALSE;
++    }
++    St = mXnuUfsBootB->ReadBlocks (
++           mXnuUfsBootB,
++           mXnuUfsBootB->Media->MediaId,
++           (XNU_PAYLOAD_BASE + Off) / Bs,
++           EFI_PAGES_TO_SIZE (Pages),
++           Buf
++           );
++    if (EFI_ERROR (St)) {
++      DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] %a read = %r\n", (which == 0) ? "kernel" : "ramdisk", St));
++      FreePages (Buf, Pages);
++      return FALSE;
++    }
++    Crc = CalculateCrc32 (Buf, (UINTN)Len);
++    DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] %a CRC 0x%x %a\n",
++            (which == 0) ? "kernel" : "ramdisk", Crc, (Crc == Want) ? "OK" : "MISMATCH"));
++    FreePages (Buf, Pages);
++    if (Crc != Want) {
++      return FALSE;
++    }
++  }
++
++  DEBUG ((EFI_D_ERROR, "[XNU-PAYLOAD] result = PASS\n"));
++  return TRUE;
++}
++
++
++STATIC
++VOID
++XnuPlatformFacts (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  UINT8       *Map = NULL;
++  UINTN       Size = 0;
++  UINTN       Key = 0, DescSize = 0;
++  UINT32      DescVer = 0;
++  UINT64      Top = 0, Sum = 0;
++  UINT64      Frq, Mpidr;
++  UINT32      GicdPidr2, GicrTyper0;
++
++  __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (Frq));
++  __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (Mpidr));
++  GicdPidr2  = *(volatile UINT32 *)(UINTN)(0x17A00000 + 0xFFE8);
++  GicrTyper0 = *(volatile UINT32 *)(UINTN)(0x17A60000 + 0x08);
++  DEBUG ((EFI_D_ERROR, "[XNU-HW] cntfrq=%ld mpidr=0x%lx gicd_pidr2=0x%x gicr_typer=0x%x\n",
++          (UINT64)Frq, (UINT64)Mpidr, GicdPidr2, GicrTyper0));
++
++  St = gBS->GetMemoryMap (&Size, NULL, &Key, &DescSize, &DescVer);
++  if (St != EFI_BUFFER_TOO_SMALL) {
++    return;
++  }
++  Size += 16 * DescSize;
++  Map = AllocatePool (Size);
++  if (Map == NULL) {
++    return;
++  }
++  St = gBS->GetMemoryMap (&Size, (EFI_MEMORY_DESCRIPTOR *)Map, &Key, &DescSize, &DescVer);
++  if (!EFI_ERROR (St)) {
++    UINTN Count = Size / DescSize;
++    for (UINTN i = 0; i < Count; i++) {
++      EFI_MEMORY_DESCRIPTOR *D = (EFI_MEMORY_DESCRIPTOR *)(Map + i * DescSize);
++      UINT64                End;
++      if (D->Type > EfiConventionalMemory) {
++        continue;
++      }
++      End = D->PhysicalStart + (D->NumberOfPages << 12);
++      if (End > Top) {
++        Top = End;
++      }
++      Sum += D->NumberOfPages << 12;
++    }
++    DEBUG ((EFI_D_ERROR, "[XNU-HW] memmap regions=%d top=0x%lx ram_total=0x%lx dram_base=0x80000000 dram_size=0x%lx\n",
++            (UINT32)Count, (UINT64)Top, (UINT64)Sum,
++            (UINT64)((Top > 0x80000000ULL) ? (Top - 0x80000000ULL) : 0)));
++  }
++  FreePool (Map);
++}
++
++
++//
++// ARM generic-timer counter: 19.2 MHz on this SoC, far better resolution than
++// EFI_TIME, whose one-second granularity made every previous measurement read
++// as "1 s".
++//
++STATIC UINT64
++XnuCntpct (
++  VOID
++  )
++{
++  UINT64  V;
++  __asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (V));
++  return V;
++}
++
++STATIC UINT64
++XnuCntfrq (
++  VOID
++  )
++{
++  UINT64  V;
++  __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (V));
++  return V;
++}
++
++STATIC
++VOID
++__attribute__((unused))
++XnuUfsBench (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  UINT64      T0c, T1c;
++  UINTN       Bs, Chunk, Blocks, Done;
++  UINT8       *Buf;
++  INTN        Elapsed;
++
++  if (mXnuUfsBootB == NULL) {
++    return;
++  }
++  Bs    = mXnuUfsBootB->Media->BlockSize;
++  Chunk = Bs * 64;                                  // 256 KiB: the largest pass below
++  Buf   = AllocatePool (Chunk);
++  if (Buf == NULL) {
++    return;
++  }
++  Blocks = (UINTN)(mXnuUfsBootB->Media->LastBlock + 1);
++  if (Blocks > 512) {
++    Blocks = 512;                                   // ~2 MiB of reads
++  }
++  T0c = XnuCntpct ();
++  Done = 0;
++  for (UINTN i = 0; i + 8 <= Blocks; i += 8) {
++    St = mXnuUfsBootB->ReadBlocks (mXnuUfsBootB, mXnuUfsBootB->Media->MediaId, i, Chunk, Buf);
++    if (EFI_ERROR (St)) {
++      break;
++    }
++    Done += 8;
++  }
++  T1c = XnuCntpct ();
++  {
++    UINT64 Us = (T1c - T0c) * 1000000ULL / XnuCntfrq ();
++    if (Us == 0) Us = 1;
++    DEBUG ((EFI_D_ERROR, "[XNU-BENCH] chunk=%d n=%d %d us = %d KB/s\n",
++            (UINT32)(Bs * 8), (UINT32)Done, (UINT32)Us,
++            (UINT32)(((UINT64)Done * Bs / 1024) * 1000000ULL / Us)));
++  }
++
++  // Second pass: one block (4 KiB) per call, same total bytes, to separate a
++  // fixed per-command cost from a throughput limit.
++  T0c = XnuCntpct ();
++  Done = 0;
++  for (UINTN i = 0; i < Blocks; i++) {
++    St = mXnuUfsBootB->ReadBlocks (mXnuUfsBootB, mXnuUfsBootB->Media->MediaId, i, Bs, Buf);
++    if (EFI_ERROR (St)) {
++      break;
++    }
++    Done++;
++  }
++  T1c = XnuCntpct ();
++  Elapsed = (INTN)((T1c - T0c) * 1000000ULL / XnuCntfrq ());
++  if (Elapsed <= 0) {
++    Elapsed = 1;
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-BENCH2] chunk=%d n=%d %d us = %d KB/s\n",
++          (UINT32)Bs, (UINT32)Done, (UINT32)Elapsed,
++          (UINT32)(((UINT64)Done * Bs / 1024) * 1000000ULL / (UINT64)Elapsed)));
++
++  // Third pass: 256 KiB per call, 8 calls for the same 2 MiB.  If this is much
++  // faster than the 32 KiB pass the cost is per command, not per byte.
++  T0c = XnuCntpct ();
++  Done = 0;
++  for (UINTN i = 0; i + 64 <= Blocks; i += 64) {
++    St = mXnuUfsBootB->ReadBlocks (mXnuUfsBootB, mXnuUfsBootB->Media->MediaId, i, Bs * 64, Buf);
++    if (EFI_ERROR (St)) {
++      break;
++    }
++    Done += 64;
++  }
++  T1c = XnuCntpct ();
++  Elapsed = (INTN)((T1c - T0c) * 1000000ULL / XnuCntfrq ());
++  if (Elapsed <= 0) {
++    Elapsed = 1;
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-BENCH3] chunk=%d n=%d %d us = %d KB/s\n",
++          (UINT32)(Bs * 64), (UINT32)Done, (UINT32)Elapsed,
++          (UINT32)(((UINT64)Done * Bs / 1024) * 1000000ULL / (UINT64)Elapsed)));
++  FreePool (Buf);
++}
++
++
++STATIC
++VOID
++XnuMemMapDetail (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  UINT8       *Map = NULL;
++  UINTN       Size = 0, Key = 0, DescSize = 0;
++  UINT32      DescVer = 0;
++  UINT64      TypeTotal[16] = { 0 };
++  UINT64      BestBase = 0, BestSize = 0, CurBase = 0, CurSize = 0;
++
++  St = gBS->GetMemoryMap (&Size, NULL, &Key, &DescSize, &DescVer);
++  if (St != EFI_BUFFER_TOO_SMALL) {
++    return;
++  }
++  Size += 32 * DescSize;
++  Map = AllocatePool (Size);
++  if (Map == NULL) {
++    return;
++  }
++  St = gBS->GetMemoryMap (&Size, (EFI_MEMORY_DESCRIPTOR *)Map, &Key, &DescSize, &DescVer);
++  if (!EFI_ERROR (St)) {
++    UINTN Count = Size / DescSize;
++    for (UINTN i = 0; i < Count; i++) {
++      EFI_MEMORY_DESCRIPTOR *D = (EFI_MEMORY_DESCRIPTOR *)(Map + i * DescSize);
++      UINT64                Bytes = D->NumberOfPages << 12;
++      if (D->Type < 16) {
++        TypeTotal[D->Type] += Bytes;
++      }
++      if (D->Type == EfiConventionalMemory) {
++        if ((CurSize != 0) && (D->PhysicalStart == CurBase + CurSize)) {
++          CurSize += Bytes;
++        } else {
++          CurBase = D->PhysicalStart;
++          CurSize = Bytes;
++        }
++        if (CurSize > BestSize) {
++          BestSize = CurSize;
++          BestBase = CurBase;
++        }
++      } else {
++        CurSize = 0;
++      }
++    }
++    DEBUG ((EFI_D_ERROR, "[XNU-MMAP] conventional=0x%lx loader=0x%lx/0x%lx bootsvc=0x%lx/0x%lx rt=0x%lx/0x%lx acpi=0x%lx nvs=0x%lx reserved=0x%lx mmio=0x%lx\n",
++            (UINT64)TypeTotal[EfiConventionalMemory],
++            (UINT64)TypeTotal[EfiLoaderCode], (UINT64)TypeTotal[EfiLoaderData],
++            (UINT64)TypeTotal[EfiBootServicesCode], (UINT64)TypeTotal[EfiBootServicesData],
++            (UINT64)TypeTotal[EfiRuntimeServicesCode], (UINT64)TypeTotal[EfiRuntimeServicesData],
++            (UINT64)TypeTotal[EfiACPIReclaimMemory], (UINT64)TypeTotal[EfiACPIMemoryNVS],
++            (UINT64)TypeTotal[EfiReservedMemoryType], (UINT64)TypeTotal[EfiMemoryMappedIO]));
++    DEBUG ((EFI_D_ERROR, "[XNU-MMAP] largest contiguous conventional: base=0x%lx size=0x%lx (%ld MiB)\n",
++            (UINT64)BestBase, (UINT64)BestSize, (UINT64)(BestSize >> 20)));
++    if (BestBase + BestSize > 0x380000000ULL) {
++      DEBUG ((EFI_D_WARN, "[XNU-MMAP] WARNING: conventional memory extends past 0x380000000 (12 GiB DRAM end)\n"));
++    }
++    {
++      UINT64  Bs[6] = { 0 }, Bb[6] = { 0 };
++      UINT64  Cb = 0, Cs = 0;
++      UINTN   N = 0;
++      for (UINTN i = 0; i < Count; i++) {
++        EFI_MEMORY_DESCRIPTOR *D = (EFI_MEMORY_DESCRIPTOR *)(Map + i * DescSize);
++        UINT64                B2 = D->NumberOfPages << 12;
++        if (D->Type != EfiConventionalMemory) {
++          Cs = 0;
++          continue;
++        }
++        if ((Cs != 0) && (D->PhysicalStart == Cb + Cs)) {
++          Cs += B2;
++        } else {
++          Cb = D->PhysicalStart;
++          Cs = B2;
++        }
++        for (UINTN k = 0; k < 6; k++) {
++          if (Cs > Bs[k]) {
++            for (UINTN j = 5; j > k; j--) {
++              Bs[j] = Bs[j-1];
++              Bb[j] = Bb[j-1];
++            }
++            Bs[k] = Cs;
++            Bb[k] = Cb;
++            break;
++          }
++        }
++      }
++      for (N = 0; N < 6; N++) {
++        if (Bs[N] == 0) {
++          break;
++        }
++        DEBUG ((EFI_D_ERROR, "[XNU-MMAP-DUMP] block %d: base=0x%lx end=0x%lx size=0x%lx (%ld MiB)\n",
++                (UINT32)(N+1), (UINT64)Bb[N], (UINT64)(Bb[N]+Bs[N]), (UINT64)Bs[N], (UINT64)(Bs[N]>>20)));
++      }
++    }
++  }
++  FreePool (Map);
++}
++
++
++STATIC
++VOID
++XnuCheckLoader (
++  VOID
++  )
++{
++  EFI_GUID    LoaderGuid = { 0x0f0a492e, 0x5a6a, 0x49f6,
++                             { 0xa1, 0xbf, 0x74, 0x3c, 0x87, 0xab, 0x1c, 0xfe } };
++  VOID        *Loader = NULL;
++  EFI_STATUS  St;
++
++  St = gBS->LocateProtocol (&LoaderGuid, NULL, &Loader);
++  DEBUG ((EFI_D_ERROR, "[XNU-LDR] DarwinBoot loader protocol: %r  instance=%p\n", St, Loader));
++  if (EFI_ERROR (St)) {
++    DEBUG ((EFI_D_WARN, "[XNU-LDR] driver not dispatched or protocol not installed\n"));
++  }
++}
++
++
++STATIC
++VOID
++XnuUfsSummary (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  EFI_HANDLE  *Hs = NULL;
++  UINTN       N = 0;
++  UINTN       Raw = 0;
++  UINTN       Part = 0;
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &N, &Hs);
++  if (EFI_ERROR (St) || (Hs == NULL)) {
++    DEBUG ((EFI_D_ERROR, "[XNU-UFS] no BlockIo (%r)\n", St));
++    return;
++  }
++
++  for (UINTN i = 0; i < N; i++) {
++    EFI_BLOCK_IO                *B = NULL;
++    EFI_PARTITION_INFO_PROTOCOL *Pi = NULL;
++    CHAR16                      Name[37];
++
++    if (EFI_ERROR (gBS->HandleProtocol (Hs[i], &gEfiBlockIoProtocolGuid, (VOID **)&B)) || (B == NULL)) {
++      continue;
++    }
++    if (!B->Media->LogicalPartition) {
++      Raw++;
++      continue;
++    }
++    Part++;
++
++    if (EFI_ERROR (gBS->HandleProtocol (Hs[i], &gEfiPartitionInfoProtocolGuid, (VOID **)&Pi)) ||
++        (Pi == NULL) || (Pi->Type != PARTITION_TYPE_GPT)) {
++      continue;
++    }
++    for (UINTN k = 0; k < 36; k++) {
++      Name[k] = Pi->Info.Gpt.PartitionName[k];
++    }
++    Name[36] = 0;
++
++    if (StrCmp (Name, L"boot_b") == 0) {
++      UINT8  *Buf;
++      mXnuUfsBootB = B;
++      UINTN   Bs = B->Media->BlockSize;
++
++      gXnuUfsBootBBlocks = B->Media->LastBlock + 1;
++      Buf = AllocatePool (Bs);
++      if (Buf != NULL) {
++        St = B->ReadBlocks (B, B->Media->MediaId, 0, Bs, Buf);
++        DEBUG ((EFI_D_ERROR, "[XNU-UFS] boot_b: %ld blocks x %d, read=%r, magic=\"%a\"\n",
++                gXnuUfsBootBBlocks, (UINT32)Bs, St, (CHAR8 *)Buf));
++        FreePool (Buf);
++      }
++    }
++  }
++  FreePool (Hs);
++
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS] volumes: raw=%d partitions=%d total=%d\n",
++          (UINT32)Raw, (UINT32)Part, (UINT32)N));
++  XnuUfsDumpLus ();
++  XnuUfsPayloadCheck ();
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS] ready\n"));
++}
++
++
++STATIC
++VOID
++XnuUfsBringUp (
++  VOID
++  )
++{
++  EFI_STATUS  St;
++  EFI_HANDLE  Handle = NULL;
++
++  XnuUfsIommuSetup ();
++
++  MmioWrite32 ((UINTN)XNU_UFS_HC_BASE + 0x0060, 0);
++  MmioWrite32 ((UINTN)XNU_UFS_HC_BASE + 0x0080, 0);
++  for (UINTN i = 0; i < 100; i++) {
++    if ((MmioRead32 ((UINTN)XNU_UFS_HC_BASE + 0x0060) & 1) == 0) break;
++    gBS->Stall (1000);
++  }
++  MmioWrite32 ((UINTN)XNU_UFS_HC_BASE + 0x005C, 0xFFFFFFFF);   // UTRLCLR
++  MmioWrite32 ((UINTN)XNU_UFS_HC_BASE + 0x007C, 0xFFFFFFFF);   // UTMRLCLR
++
++  mXnuUfsHc.GetUfsHcMmioBar = XnuUfsGetBar;
++  mXnuUfsHc.AllocateBuffer  = XnuUfsAlloc;
++  mXnuUfsHc.FreeBuffer      = XnuUfsFree;
++  mXnuUfsHc.Map             = XnuUfsMap;
++  mXnuUfsHc.Unmap           = XnuUfsUnmap;
++  mXnuUfsHc.Flush           = XnuUfsFlush;
++  mXnuUfsHc.Read            = XnuUfsRead;
++  mXnuUfsHc.Write           = XnuUfsWrite;
++
++  mXnuUfsPlat.Version         = EDKII_UFS_HC_PLATFORM_PROTOCOL_VERSION;
++  mXnuUfsPlat.OverrideHcInfo  = XnuUfsOvr;
++  mXnuUfsPlat.Callback        = XnuUfsCb;
++  mXnuUfsPlat.RefClkFreq      = EdkiiUfsCardRefClkFreq19p2Mhz;
++  mXnuUfsPlat.SkipHceReenable = FALSE;
++  mXnuUfsPlat.SkipLinkStartup = FALSE;
++
++  St = gBS->InstallMultipleProtocolInterfaces (
++              &Handle,
++              &gEfiDevicePathProtocolGuid,        &mXnuUfsDp,
++              &gEdkiiUfsHostControllerProtocolGuid, &mXnuUfsHc,
++              &gEdkiiUfsHcPlatformProtocolGuid,     &mXnuUfsPlat,
++              NULL);
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS] install protocols = %r\n", St));
++  if (EFI_ERROR (St)) {
++    return;
++  }
++
++  XnuLoadVolumeDriver (L"\\UFSPT.EFI");
++  XnuLoadVolumeDriver (L"\\SCSIBUS.EFI");
++  XnuLoadVolumeDriver (L"\\SCSIDISK.EFI");
++
++
++  {
++    EFI_HANDLE  Drivers[2];
++    Drivers[0] = gXnuUfsPassThruImage;
++    Drivers[1] = NULL;
++    St = gBS->ConnectController (Handle, Drivers, NULL, FALSE);
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS] connect UfsPassThru = %r\n", St));
++
++
++  St = gBS->ConnectController (Handle, NULL, NULL, TRUE);
++  DEBUG ((EFI_D_ERROR, "[XNU-UFS] connect SCSI layer = %r\n", St));
++
++  // The payload volume driver needs the UFS/SCSI partition tree that was just
++  // created, so it is started here instead of at DXE dispatch.
++  St = XnuLoadVolumeDriver (L"\\XNUPAY.EFI");
++  DEBUG ((EFI_D_ERROR, "[XNU-PAY] start driver = %r\n", St));
++
++  XnuUfsSummary ();
++  XnuPlatformFacts ();
++  XnuMemMapDetail ();
++  XnuUfsGearNegotiate ();
++  XnuCheckLoader ();
++
++  {
++    EFI_HANDLE *Hs = NULL;
++    UINTN       N  = 0;
++    if (!EFI_ERROR (gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &N, &Hs))) {
++
++      {
++        UINTN  Shown  = 0;
++        UINTN  Dumped = 0;
++        for (UINTN i = 0; (i < N) && (Shown < 12); i++) {
++          EFI_BLOCK_IO  *B = NULL;
++          if (EFI_ERROR (gBS->HandleProtocol (Hs[i], &gEfiBlockIoProtocolGuid, (VOID **)&B)) || (B == NULL)) {
++            continue;
++          }
++          DEBUG ((EFI_D_ERROR, "[XNU-GPT] disk %d: blocks=0x%lx blkSize=%d rw=%d\n",
++                  (UINT32)i, (UINT64)(B->Media->LastBlock + 1),
++                  B->Media->BlockSize, !B->Media->ReadOnly));
++          Shown++;
++          //
++          // Only the big device carries a partition table; dumping GPT for all
++          // 128 enumerated LUs would take minutes.
++          //
++          if ((Dumped == 0) && (B->Media->LastBlock > 0x100000) && (B->Media->BlockSize >= 512)) {
++            Dumped++;
++          }
++        }
++      }
++      FreePool (Hs);
++    }
++    Hs = NULL; N = 0;
++
++  }
++
++}
++
+ VOID
+ EFIAPI
+ PlatformBootManagerAfterConsole ()
+ {
+   EFI_STATUS                    Status      = EFI_SUCCESS;
++
++  XnuUfsDiag ();
+   EFI_GRAPHICS_OUTPUT_PROTOCOL *GopProtocol = NULL;
+ 
+   // Post Setup GOP
+@@ -624,6 +2100,9 @@ PlatformBootManagerAfterConsole ()
+     YPos = ScreenHeight * 48 / 50;
+   }
+ 
++  // Launch the UFS stack with the console available
++  XnuUfsBringUp ();
++
+   // Execute Secondary After Console
+   DeviceBootManagerAfterConsole ();
+ 
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf
+index 2310dc61..6f8679c9 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf
+@@ -1,50 +1,62 @@
+-##
+-#  Copyright (C) Microsoft Corporation. All rights reserved.
+-#  SPDX-License-Identifier: BSD-2-Clause-Patent
+-##
+-
+-[Defines]
+-  INF_VERSION                    = 0x00010018
+-  BASE_NAME                      = BootManagerLib
+-  FILE_GUID                      = DF8F3324-5448-46BC-872C-BE198ECF2F76
+-  VERSION_STRING                 = 1.0
+-  MODULE_TYPE                    = DXE_DRIVER
+-  UEFI_SPECIFICATION_VERSION     = 2.7
+-  LIBRARY_CLASS                  = PlatformBootManagerLib|DXE_DRIVER
+-
+-[Sources]
+-  BootManager.c
+-  KeyCallback.c
+-
+-[Packages]
+-  MdePkg/MdePkg.dec
+-  PcBdsPkg/PcBdsPkg.dec
+-  MsCorePkg/MsCorePkg.dec
+-  MsGraphicsPkg/MsGraphicsPkg.dec
+-  MdeModulePkg/MdeModulePkg.dec
+-  SiliciumPkg/SiliciumPkg.dec
+-
+-[LibraryClasses]
+-  PcdLib
+-  DebugLib
+-  AcpiTableUpdateLib
+-  DeviceBootManagerLib
+-  UefiRuntimeServicesTableLib
+-  UefiBootServicesTableLib
+-  SecureBootHandlerLib
+-  MemoryAllocationLib
+-  MsBootOptionsLib
+-  BootGraphicsLib
+-  DevicePathLib
+-  PrintLib
+-
+-[Pcd]
+-  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut
+-
+-[Guids]
+-  gEfiEndOfDxeEventGroupGuid
+-
+-[Protocols]
+-  gKeypadDeviceProtocolGuid
+-  gEfiGraphicsOutputProtocolGuid
+-  gEfiSimpleTextInputExProtocolGuid
++##
++#  Copyright (C) Microsoft Corporation. All rights reserved.
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010018
++  BASE_NAME                      = BootManagerLib
++  FILE_GUID                      = DF8F3324-5448-46BC-872C-BE198ECF2F76
++  VERSION_STRING                 = 1.0
++  MODULE_TYPE                    = DXE_DRIVER
++  UEFI_SPECIFICATION_VERSION     = 2.7
++  LIBRARY_CLASS                  = PlatformBootManagerLib|DXE_DRIVER
++
++[Sources]
++  BootManager.c
++  KeyCallback.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  PcBdsPkg/PcBdsPkg.dec
++  MsCorePkg/MsCorePkg.dec
++  MsGraphicsPkg/MsGraphicsPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  SiliciumPkg/SiliciumPkg.dec
++
++[LibraryClasses]
++  PcdLib
++  DebugLib
++  AcpiTableUpdateLib
++  DeviceBootManagerLib
++  UefiRuntimeServicesTableLib
++  UefiBootServicesTableLib
++  SecureBootHandlerLib
++  MemoryAllocationLib
++  MsBootOptionsLib
++  BootGraphicsLib
++  DevicePathLib
++  CacheMaintenanceLib
++  IoLib
++  DxeServicesLib
++  DxeServicesTableLib
++  PrintLib
++
++[Pcd]
++  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut
++
++[Guids]
++  gEfiEndOfDxeEventGroupGuid
++
++[Protocols]
++  gKeypadDeviceProtocolGuid
++  gEfiGraphicsOutputProtocolGuid
++  gEfiSimpleTextInputExProtocolGuid
++  gEfiSimpleFileSystemProtocolGuid
++  gEfiLoadedImageProtocolGuid
++  gEfiExtScsiPassThruProtocolGuid
++  gEfiBlockIoProtocolGuid
++  gEfiUfsDeviceConfigProtocolGuid
++  gEfiPartitionInfoProtocolGuid
++  gEdkiiUfsHostControllerProtocolGuid
++  gEdkiiUfsHcPlatformProtocolGuid
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib/FrameBufferSerialPortLib.c b/Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib/FrameBufferSerialPortLib.c
+index d2844e0a..857bdfd2 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib/FrameBufferSerialPortLib.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib/FrameBufferSerialPortLib.c
+@@ -1,4 +1,5 @@
+ #include <Library/BaseMemoryLib.h>
++#include <KebabFwLog.h>
+ #include <Library/CacheMaintenanceLib.h>
+ #include <Library/MemoryMapHelperLib.h>
+ #include <Library/SerialPortLib.h>
+@@ -238,6 +239,32 @@ GetFrameBufferMemory (
+   return EFI_SUCCESS;
+ }
+ 
++
++STATIC KEBAB_FWLOG *mKebabFwLog = (KEBAB_FWLOG *)(UINTN)KEBAB_FWLOG_PA;
++
++STATIC
++VOID
++KebabFwLogAppend (
++  IN CONST UINT8  *Buffer,
++  IN UINTN        Length
++  )
++{
++  UINT64 Head;
++  UINTN  Index;
++
++  if (Buffer == NULL || Length == 0) {
++    return;
++  }
++  if (mKebabFwLog->Magic != KEBAB_FWLOG_MAGIC) {
++    return;
++  }
++  Head = __atomic_load_n (&mKebabFwLog->Head, __ATOMIC_RELAXED);
++  for (Index = 0; Index < Length; Index++) {
++    mKebabFwLog->Data[(Head + Index) % KEBAB_FWLOG_DATA_SIZE] = Buffer[Index];
++  }
++  __atomic_store_n (&mKebabFwLog->Head, Head + Length, __ATOMIC_RELEASE);
++}
++
+ UINTN
+ EFIAPI
+ SerialPortWrite (
+@@ -248,6 +275,9 @@ SerialPortWrite (
+   EFI_PHYSICAL_ADDRESS FbBase;
+   UINT64               FbLength;
+ 
++  // Mirror the text into the firmware log before rendering it.
++  KebabFwLogAppend (Buffer, NumberOfBytes);
++
+   // Get Frame Buffer Memory
+   Status = GetFrameBufferMemory (&FbBase, &FbLength);
+   if (EFI_ERROR (Status)) {

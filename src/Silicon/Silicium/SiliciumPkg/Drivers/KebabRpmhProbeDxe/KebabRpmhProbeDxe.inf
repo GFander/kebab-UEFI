@@ -1,0 +1,38 @@
+## @file
+#  Kebab RPMh probe (read-only).
+#
+#  Prints the RPMh protocol interface and its function table, addresses
+#  converted to RVAs.  Calls nothing and writes nothing.
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = KebabRpmhProbeDxe
+  FILE_GUID                      = 7f1e2d34-5a6b-4c8d-9e0f-1a2b3c4d5e6f
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = KebabRpmhProbeEntry
+
+[Sources]
+  KebabRpmhProbeDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  PrintLib
+  DebugLib
+
+[Protocols]
+  gEfiLoadedImageProtocolGuid
+
+[Guids]
+  gEfiEventReadyToBootGuid
+
+[Depex]
+  TRUE

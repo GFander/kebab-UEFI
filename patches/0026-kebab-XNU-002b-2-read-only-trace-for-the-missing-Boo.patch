@@ -1,0 +1,165 @@
+From 271eb62f574f847aac6eab765fe2266ffd72c839 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 23:52:47 +0800
+Subject: [PATCH 26/38] kebab: XNU-002b-2 read-only trace for the missing
+ Boot9800
+
+Boot9800 is written and appended to BootOrder, yet the menu never lists it,
+while an auto-enumerated 'UEFI Non-Block Boot Device' shows up instead.
+
+The menu itself reads the list correctly: BootManagerMenu.c:1054-1057 does
+ConnectAll -> RefreshAllBootOption -> GetLoadOptions, and GetLoadOptions
+deletes any Boot#### that fails EfiBootManagerVariableToLoadOption. So the
+option most likely dies in that validation step.
+
+This build prints, right after registration and without changing anything:
+  - the whole BootOrder as numbers;
+  - the raw Boot9800: size, Attributes, FilePathListLength, Description,
+    every device-path node (type/sub/len), the PIWG file GUID, the walked
+    length vs PathLen and IsDevicePathValid();
+  - the exact size predicate BmValidateOption applies.
+
+No registration behaviour is changed; CATEGORY_APP, the default entry and
+the RAM FAT path are untouched.
+---
+ .../Library/BootManagerLib/BootManager.c      | 120 ++++++++++++++++++
+ 1 file changed, 120 insertions(+)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index 9a3017f9..392fd7eb 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -329,6 +329,109 @@ XnuMakeLast (
+   if (Order != NULL) FreePool (Order);
+ }
+ 
++
++
++STATIC
++VOID
++XnuTraceOrderNums (
++  IN CONST CHAR8 *Where
++  )
++{
++  EFI_STATUS  Status;
++  UINT16     *Order = NULL;
++  UINTN       Size  = 0;
++
++  Status = gRT->GetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid, NULL, &Size, NULL);
++  if (Status == EFI_BUFFER_TOO_SMALL) {
++    Order = AllocatePool (Size);
++    if (Order != NULL) {
++      if (EFI_ERROR (gRT->GetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid, NULL, &Size, Order))) {
++        FreePool (Order);
++        Order = NULL;
++      }
++    }
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-DUMP] BootOrder (%a) = %d entries:", Where,
++          (Order != NULL) ? (UINT32)(Size / sizeof (UINT16)) : 0));
++  if (Order != NULL) {
++    for (UINTN i = 0; i < Size / sizeof (UINT16); i++) {
++      DEBUG ((EFI_D_ERROR, " %04x", Order[i]));
++    }
++    FreePool (Order);
++  }
++  DEBUG ((EFI_D_ERROR, "\n"));
++}
++
++STATIC
++VOID
++XnuDumpBootEntry (
++  IN UINT16 Number
++  )
++{
++  EFI_STATUS  Status;
++  CHAR16      Name[10];
++  UINT8      *Var = NULL;
++  UINTN       Size = 0;
++  UINT32      Attr;
++  UINT16      PathLen;
++  CHAR16     *Desc;
++  UINT8      *Path;
++  UINTN       Off;
++  UINTN       OptOff;
++
++  UnicodeSPrint (Name, sizeof (Name), L"Boot%04x", Number);
++  Status = gRT->GetVariable (Name, &gEfiGlobalVariableGuid, NULL, &Size, NULL);
++  DEBUG ((EFI_D_ERROR, "[XNU-DUMP] %S GetVariable(size probe) = %r size = %d\n", Name, Status, (UINT32)Size));
++  if ((Status != EFI_BUFFER_TOO_SMALL) || (Size < 8)) {
++    return;
++  }
++  Var = AllocatePool (Size);
++  if (Var == NULL) {
++    return;
++  }
++  Status = gRT->GetVariable (Name, &gEfiGlobalVariableGuid, NULL, &Size, Var);
++  DEBUG ((EFI_D_ERROR, "[XNU-DUMP] %S read = %r varSize = %d\n", Name, Status, (UINT32)Size));
++  if (EFI_ERROR (Status)) {
++    FreePool (Var);
++    return;
++  }
++
++  Attr    = *(UINT32 *)Var;
++  PathLen = *(UINT16 *)(Var + 4);
++  Desc    = (CHAR16 *)(Var + 6);
++  DEBUG ((EFI_D_ERROR, "[XNU-DUMP] Attr = 0x%08x (ACTIVE=%d CATEGORY=0x%x)\n",
++          Attr, (Attr & LOAD_OPTION_ACTIVE) ? 1 : 0, Attr & LOAD_OPTION_CATEGORY));
++  DEBUG ((EFI_D_ERROR, "[XNU-DUMP] PathLen = %d  Desc = \"%S\"\n", (UINT32)PathLen, Desc));
++
++  OptOff = 6 + StrSize (Desc);
++  Path   = Var + OptOff;
++  DEBUG ((EFI_D_ERROR, "[XNU-DUMP] OptDataOff = %d OptDataSize = %d\n",
++          (UINT32)OptOff + PathLen, (UINT32)(Size - OptOff - PathLen)));
++
++  Off = 0;
++  while (Off + 4 <= PathLen) {
++    EFI_DEVICE_PATH_PROTOCOL *N = (EFI_DEVICE_PATH_PROTOCOL *)(Path + Off);
++    UINT16 L = *(UINT16 *)(Path + Off + 2);
++    DEBUG ((EFI_D_ERROR, "[XNU-DUMP]   node@%d type=%d sub=%d len=%d\n",
++            (UINT32)Off, N->Type, N->SubType, L));
++    if ((N->Type == MEDIA_DEVICE_PATH) && (N->SubType == 0x06) && (L >= 20)) {
++      EFI_GUID *G = (EFI_GUID *)(Path + Off + 4);
++      DEBUG ((EFI_D_ERROR, "[XNU-DUMP]   FVFILE %g\n", G));
++    }
++    if (N->Type == END_DEVICE_PATH_TYPE) {
++      break;
++    }
++    if (L < 4) {
++      DEBUG ((EFI_D_ERROR, "[XNU-DUMP]   BAD node length, stop\n"));
++      break;
++    }
++    Off += L;
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-DUMP] walked %d of PathLen %d (IsDevicePathValid=%d)\n",
++          (UINT32)Off, (UINT32)PathLen, IsDevicePathValid ((EFI_DEVICE_PATH_PROTOCOL *)Path, PathLen) ? 1 : 0));
++  FreePool (Var);
++}
++
+ STATIC
+ VOID
+ XnuRegisterUniXNU (
+@@ -446,6 +549,23 @@ PlatformBootManagerAfterConsole ()
+ 
+   // XNU-002a-4: append the UniXNU boot option (no-op if absent)
+   XnuRegisterUniXNU ();
++  XnuTraceOrderNums ("after register");
++  XnuDumpBootEntry (0x9800);
++  // Probe the exact predicate BDS will apply, without changing state.
++  {
++    EFI_STATUS St2; UINTN Sz2 = 0; UINT8 *V2 = NULL; UINT16 PL2;
++    St2 = gRT->GetVariable (L"Boot9800", &gEfiGlobalVariableGuid, NULL, &Sz2, NULL);
++    if (St2 == EFI_BUFFER_TOO_SMALL) {
++      V2 = AllocatePool (Sz2);
++      if (V2 != NULL && !EFI_ERROR (gRT->GetVariable (L"Boot9800", &gEfiGlobalVariableGuid, NULL, &Sz2, V2))) {
++        PL2 = *(UINT16 *)(V2 + 4);
++        DEBUG ((EFI_D_ERROR, "[XNU-DUMP] BDS predicate: %d + %d + %d + %d <= %d -> %d\n",
++                4, 2, (UINT32)StrSize ((CHAR16 *)(V2 + 6)), (UINT32)PL2, (UINT32)Sz2,
++                ((4 + 2 + StrSize ((CHAR16 *)(V2 + 6)) + PL2) <= Sz2) ? 1 : 0));
++      }
++      if (V2 != NULL) FreePool (V2);
++    }
++  }
+ }
+ 
+ VOID

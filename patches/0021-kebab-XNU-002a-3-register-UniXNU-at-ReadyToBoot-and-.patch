@@ -1,0 +1,291 @@
+From 487bca719fc5f14f260af1b9e2fa7bb0b528cd32 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 23:02:18 +0800
+Subject: [PATCH 21/38] kebab: XNU-002a-3 register UniXNU at ReadyToBoot and
+ force it LAST
+
+XNU-002a-2 registered from the DXE entry point. That is too early: the
+platform options are registered by PlatformBootManagerBeforeConsole()
+(BootManagerLib/BootManager.c:48), which BdsDxe calls long after DXE
+dispatch. With an empty BootOrder our entry would be created first and the
+platform options appended after it, leaving BootOrder = [UniXNU,
+Internal Storage, USB Storage, FFU Mode] -- i.e. UniXNU would still have
+become the default, just by accident instead of by intent.
+
+- Registration moved to a ReadyToBoot event. TPL_CALLBACK is legal here
+  (Core Event.c rejects only NotifyTpl <= TPL_APPLICATION) and the callback
+  performs no driver connection, only SetVariable.
+- MakeLast() removes the number from wherever it is and appends it at the
+  end, so the original first entry is preserved even if a platform driver
+  later rewrites BootOrder.
+- Diagnostics print BootOrderBefore/After (count + first), the Boot####
+  number, and DefaultPreserved.
+- Callback is one-shot; repeated ReadyToBoot signals are ignored.
+---
+ .../Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c | 183 ++++++++++++------
+ 1 file changed, 128 insertions(+), 55 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
+index 1fa6a391..ed902a79 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
+@@ -21,6 +21,7 @@
+ #include <Library/PrintLib.h>
+ #include <Protocol/FirmwareVolume2.h>
+ #include <Guid/GlobalVariable.h>
++#include <Guid/EventGroup.h>
+ 
+ #define UNIXNU_APP_GUID \
+   { 0x9B665204, 0xA133, 0x47A2, { 0x93, 0x96, 0x9E, 0x2B, 0x37, 0x0A, 0x4E, 0x25 }}
+@@ -28,6 +29,8 @@
+ STATIC EFI_GUID  mAppGuid   = UNIXNU_APP_GUID;
+ STATIC CHAR16    mDesc[]    = L"UniXNU";
+ STATIC CHAR8     mOptional[] = "unixnu:firmware";
++STATIC EFI_EVENT mReadyToBoot = NULL;
++STATIC BOOLEAN   mDone = FALSE;
+ 
+ STATIC
+ EFI_STATUS
+@@ -91,88 +94,135 @@ BuildFilePath (IN EFI_HANDLE FvHandle)
+ 
+ STATIC
+ EFI_STATUS
+-AppendBootOrder (
+-  IN UINT16 Number
++GetBootOrder (
++  OUT UINT16 **Order,
++  OUT UINTN   *Count
+   )
+ {
+-  EFI_STATUS  St;
+-  UINT16     *Order = NULL;
+-  UINTN       Size = 0;
+-  UINT16     *New;
++  EFI_STATUS St;
++  UINTN      Size = 0;
+ 
++  *Order = NULL;
++  *Count = 0;
+   St = gRT->GetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid, NULL, &Size, NULL);
+-  if (St == EFI_BUFFER_TOO_SMALL) {
+-    Order = AllocatePool (Size);
+-    if (Order == NULL) {
+-      return EFI_OUT_OF_RESOURCES;
+-    }
+-    St = gRT->GetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid, NULL, &Size, Order);
+-    if (EFI_ERROR (St)) {
+-      FreePool (Order);
+-      return St;
+-    }
+-  } else if (St == EFI_NOT_FOUND) {
+-    Size  = 0;
+-    Order = NULL;
+-  } else if (EFI_ERROR (St)) {
++  if (St == EFI_NOT_FOUND) {
++    return EFI_SUCCESS;
++  }
++  if (St != EFI_BUFFER_TOO_SMALL) {
++    return St;
++  }
++  *Order = AllocatePool (Size);
++  if (*Order == NULL) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++  St = gRT->GetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid, NULL, &Size, *Order);
++  if (EFI_ERROR (St)) {
++    FreePool (*Order);
++    *Order = NULL;
+     return St;
+   }
++  *Count = Size / sizeof (UINT16);
++  return EFI_SUCCESS;
++}
+ 
+-  for (UINTN i = 0; i < Size / sizeof (UINT16); i++) {
+-    if (Order[i] == Number) {
+-      if (Order != NULL) {
+-        FreePool (Order);
+-      }
+-      return EFI_SUCCESS;              // already present, nothing to do
+-    }
++//
++// Move Number to the END of BootOrder (append if absent).  BDS registers the
++// platform options (Internal Storage / USB Storage / FFU Mode) in
++// PlatformBootManagerBeforeConsole(), i.e. AFTER every DXE driver has run,
++// so appending from a DXE entry point would actually put UniXNU FIRST.
++// This runs at ReadyToBoot, when the platform list already exists.
++//
++STATIC
++EFI_STATUS
++MakeLast (
++  IN UINT16 Number
++  )
++{
++  EFI_STATUS St;
++  UINT16    *Order = NULL;
++  UINTN      Count = 0;
++  UINT16    *New = NULL;
++  UINTN      Out = 0;
++  BOOLEAN    Changed = FALSE;
++
++  St = GetBootOrder (&Order, &Count);
++  if (EFI_ERROR (St)) {
++    return St;
+   }
++  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] BootOrderBefore = %d entries, first = %04x\n",
++          (UINT32)Count, (Count > 0) ? Order[0] : 0xFFFF));
+ 
+-  New = AllocatePool (Size + sizeof (UINT16));
++  New = AllocatePool ((Count + 1) * sizeof (UINT16));
+   if (New == NULL) {
+     if (Order != NULL) FreePool (Order);
+     return EFI_OUT_OF_RESOURCES;
+   }
+-  if ((Order != NULL) && (Size > 0)) {
+-    CopyMem (New, Order, Size);
++  for (UINTN i = 0; i < Count; i++) {
++    if (Order[i] == Number) {
++      Changed = TRUE;                 // drop it from its current position
++      continue;
++    }
++    New[Out++] = Order[i];
+   }
+-  New[Size / sizeof (UINT16)] = Number;
+-  St = gRT->SetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid,
+-                         EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+-                         Size + sizeof (UINT16), New);
++  if ((Count == 0) || (Out != Count) || !(Count > 0 && Order[Count - 1] == Number)) {
++    Changed = TRUE;
++  }
++  New[Out++] = Number;
++
++  if (Changed) {
++    St = gRT->SetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid,
++                           EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
++                           Out * sizeof (UINT16), New);
++  } else {
++    St = EFI_SUCCESS;
++  }
++  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] BootOrderWrite  = %r (%s)\n", St, Changed ? "moved to end" : "already last"));
++
++  if (!EFI_ERROR (St)) {
++    DEBUG ((EFI_D_ERROR, "[XNU-BOOT] BootOrderAfter  = %d entries, first = %04x\n",
++            (UINT32)Out, New[0]));
++    DEBUG ((EFI_D_ERROR, "[XNU-BOOT] DefaultPreserved= %s\n",
++            ((Count > 0) && (New[0] == Order[0])) ? "1" : ((Count == 0) ? "1 (was empty)" : "0")));
++  }
++
+   FreePool (New);
+   if (Order != NULL) FreePool (Order);
+   return St;
+ }
+ 
+-EFI_STATUS
++STATIC
++VOID
+ EFIAPI
+-XnuBootEntryDxeEntryPoint (
+-  IN EFI_HANDLE        ImageHandle,
+-  IN EFI_SYSTEM_TABLE  *SystemTable
++XnuBootEntryReadyToBoot (
++  IN EFI_EVENT Event,
++  IN VOID     *Context
+   )
+ {
+-  EFI_STATUS                     St;
+-  EFI_HANDLE                     FvHandle = NULL;
+-  EFI_DEVICE_PATH_PROTOCOL      *Dp;
+-  UINTN                          DpSize;
+-  UINT8                         *Option;
+-  UINTN                          OptionSize;
+-  UINT16                         Number;
+-  CHAR16                         Name[9];
+-  UINT32                         Attr = LOAD_OPTION_ACTIVE;
++  EFI_STATUS                St;
++  EFI_HANDLE                FvHandle = NULL;
++  EFI_DEVICE_PATH_PROTOCOL *Dp;
++  UINTN                     DpSize;
++  UINT8                    *Option;
++  UINTN                     OptionSize;
++  UINT16                    Number;
++  CHAR16                    Name[9];
++  UINT32                    Attr = 0;
+ 
+-  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] XnuBootEntryDxe entry (append-only)\n"));
++  if (mDone) {
++    DEBUG ((EFI_D_ERROR, "[XNU-BOOT] ReadyToBoot    = repeat (ignored)\n"));
++    return;
++  }
++  mDone = TRUE;
+ 
+   St = FindAppFv (&FvHandle);
+   DEBUG ((EFI_D_ERROR, "[XNU-BOOT] AppFv          = %r\n", St));
+   if (EFI_ERROR (St)) {
+-    return EFI_SUCCESS;
++    return;
+   }
+ 
+   Dp = BuildFilePath (FvHandle);
+   if (Dp == NULL) {
+-    DEBUG ((EFI_D_ERROR, "[XNU-BOOT] DevicePath     = NULL (abort)\n"));
+-    return EFI_SUCCESS;
++    return;
+   }
+   DpSize = GetDevicePathSize (Dp);
+ 
+@@ -180,8 +230,9 @@ XnuBootEntryDxeEntryPoint (
+   Option     = AllocateZeroPool (OptionSize);
+   if (Option == NULL) {
+     FreePool (Dp);
+-    return EFI_SUCCESS;
++    return;
+   }
++  Attr = LOAD_OPTION_ACTIVE;
+   CopyMem (Option, &Attr, sizeof (UINT32));
+   *(UINT16 *)(Option + sizeof (UINT32)) = (UINT16)DpSize;
+   CopyMem (Option + sizeof (UINT32) + sizeof (UINT16), mDesc, sizeof (mDesc));
+@@ -198,7 +249,7 @@ XnuBootEntryDxeEntryPoint (
+   if (Number >= 0x9900) {
+     FreePool (Option);
+     FreePool (Dp);
+-    return EFI_SUCCESS;
++    return;
+   }
+ 
+   St = gRT->SetVariable (Name, &gEfiGlobalVariableGuid,
+@@ -206,11 +257,33 @@ XnuBootEntryDxeEntryPoint (
+                          OptionSize, Option);
+   DEBUG ((EFI_D_ERROR, "[XNU-BOOT] Create %S      = %r\n", Name, St));
+   if (!EFI_ERROR (St)) {
+-    St = AppendBootOrder (Number);
+-    DEBUG ((EFI_D_ERROR, "[XNU-BOOT] AppendBootOrder = %r (appended, default untouched)\n", St));
++    MakeLast (Number);
+   }
+ 
+   FreePool (Option);
+   FreePool (Dp);
++}
++
++EFI_STATUS
++EFIAPI
++XnuBootEntryDxeEntryPoint (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_STATUS St;
++
++  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] XnuBootEntryDxe entry (ReadyToBoot hook)\n"));
++
++  //
++  // Register at ReadyToBoot, not now: BDS registers the platform options in
++  // PlatformBootManagerBeforeConsole() (BootManager.c:48), which runs after
++  // every DXE driver.  TPL_CALLBACK is legal here (Event.c only rejects
++  // NotifyTpl <= TPL_APPLICATION) and no driver connection happens in the
++  // callback, so the TPL is safe.
++  //
++  St = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, XnuBootEntryReadyToBoot,
++                           NULL, &gEfiEventReadyToBootGuid, &mReadyToBoot);
++  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] ReadyToBootEvt  = %r\n", St));
+   return EFI_SUCCESS;
+ }

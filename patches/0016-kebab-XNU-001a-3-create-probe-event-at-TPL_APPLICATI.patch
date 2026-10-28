@@ -1,0 +1,73 @@
+From 430ee458fc4a570eb296e859292bebcb632966a2 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 21:38:08 +0800
+Subject: [PATCH 16/38] kebab: XNU-001a-3 create probe event at TPL_APPLICATION
+ + one-shot guard
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The ReadyToBoot callback performed ConnectController(Recursive=TRUE) and
+file reads. Running that at TPL_CALLBACK is the wrong context: driver
+connection can invoke arbitrary Driver Binding code, and the spec requires
+some services to run below TPL_CALLBACK.
+
+- CreateEventEx NotifyTpl changed TPL_CALLBACK -> TPL_APPLICATION, so the
+  notify function itself runs at TPL_APPLICATION.
+- The callback now reads the live TPL (RaiseTPL/RestoreTPL) and prints it,
+  so the真机 log proves which TPL the work actually ran at.
+- mProbeDone makes the probe one-shot: repeated ReadyToBoot signals are
+  logged and ignored (no duplicate connects, no duplicate reads).
+- RamDisk registration itself still happens in the DXE entry point
+  (TPL_APPLICATION), before BDS ConnectAll.
+---
+ .../Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c       | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+index 82f690f4..ac658bbf 100644
+--- a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+@@ -28,6 +28,7 @@ STATIC EFI_BLOCK_IO_MEDIA  mMedia;
+ STATIC EFI_BLOCK_IO_PROTOCOL mBlockIo;
+ STATIC EFI_HANDLE  mHandle   = NULL;
+ STATIC EFI_EVENT   mReadyToBoot = NULL;
++STATIC BOOLEAN     mProbeDone   = FALSE;
+ 
+ STATIC CONST CHAR8 mExpected[] =
+   "XNU-000 RAM FAT probe file.\n"
+@@ -99,11 +100,25 @@ STATIC EFI_STATUS ProbeVolume (IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs)
+ STATIC VOID EFIAPI XnuReadyToBoot (IN EFI_EVENT E, IN VOID *C)
+ {
+   EFI_STATUS St;
++  EFI_TPL    OldTpl;
++
+   EFI_HANDLE *Handles = NULL;
+   UINTN Count = 0;
+   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs = NULL;
+   BOOLEAN Found = FALSE;
+ 
++  // One-shot: ReadyToBoot may be signalled more than once.
++  if (mProbeDone) {
++    DEBUG ((EFI_D_ERROR, "[XNU-RAM] ReadyToBoot    = repeat (ignored)\n"));
++    return;
++  }
++  mProbeDone = TRUE;
++
++  // Read the current TPL without changing it (RaiseTPL returns the old value).
++  OldTpl = gBS->RaiseTPL (TPL_HIGH_LEVEL);
++  gBS->RestoreTPL (OldTpl);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] CallbackTpl     = %d (0=APPLICATION 16=CALLBACK 31=HIGH)\n", (UINT32)OldTpl));
++
+   if (mHandle != NULL) {
+     St = gBS->ConnectController (mHandle, NULL, NULL, TRUE);
+     DEBUG ((EFI_D_ERROR, "[XNU-RAM] ConnectStatus   = %r (scoped to RAM disk)\n", St));
+@@ -170,7 +185,7 @@ EFI_STATUS EFIAPI XnuRamDiskDxeEntryPoint (IN EFI_HANDLE ImageHandle, IN EFI_SYS
+   DEBUG ((EFI_D_ERROR, "[XNU-RAM] DevicePath      = %p handle=%p\n", Dp, mHandle));
+   if (EFI_ERROR (St)) return EFI_SUCCESS;
+ 
+-  St = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, XnuReadyToBoot, NULL,
++  St = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_APPLICATION, XnuReadyToBoot, NULL,
+                            &gEfiEventReadyToBootGuid, &mReadyToBoot);
+   DEBUG ((EFI_D_ERROR, "[XNU-RAM] ReadyToBootEvt  = %r\n", St));
+   return EFI_SUCCESS;

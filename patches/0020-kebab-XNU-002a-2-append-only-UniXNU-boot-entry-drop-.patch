@@ -1,0 +1,336 @@
+From 180fabb41bdece45d48721ce49818ec9fc078994 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 22:55:15 +0800
+Subject: [PATCH 20/38] kebab: XNU-002a-2 append-only UniXNU boot entry (drop
+ official UniXNUDxe)
+
+The official UniXNUDxe puts its option FIRST in BootOrder, which would
+displace the Project Silicium default. Gate 1 (manual boot-from-file) is
+not available: neither UiApp nor BootManagerMenuApp is packed in this
+firmware, so nothing offers 'Boot From File'.
+
+Instead, XnuBootEntryDxe appends a Boot#### for the UniXNU application:
+  - finds the FV that holds FILE_GUID 9B665204-... via Fv->ReadFile
+  - builds <FV device path> + PIWG firmware-file node (subtype 0x06)
+  - writes a load option whose optional data is 'unixnu:firmware'
+  - appends the number to BootOrder ONLY if absent; default entry untouched
+  - never touches BootNext and never reorders
+
+The menu is built from exactly such FV-file boot options
+(MsBootOptionsLib.c:246-248 registers Internal Storage / USB Storage /
+FFU Mode the same way), so 'UniXNU' appears in the existing list.
+
+UniXNUDxe.efi is no longer packed (the file stays in the repo, unused).
+---
+ Platforms/OnePlus/kebabPkg/kebab.dsc          |   1 +
+ Platforms/OnePlus/kebabPkg/kebab.fdf          |   4 +-
+ .../Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c | 216 ++++++++++++++++++
+ .../XnuBootEntryDxe/XnuBootEntryDxe.inf       |  42 ++++
+ 4 files changed, 260 insertions(+), 3 deletions(-)
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.inf
+
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.dsc b/Platforms/OnePlus/kebabPkg/kebab.dsc
+index 04a2c74a..ff82c7d9 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.dsc
++++ b/Platforms/OnePlus/kebabPkg/kebab.dsc
+@@ -86,6 +86,7 @@
+ [Components]
+   # Gate XNU-001a-2: RAM FAT test volume (self-contained BlockIo producer)
+   SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
++  SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.inf
+   #
+   # ACPI Tables
+   #
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.fdf b/Platforms/OnePlus/kebabPkg/kebab.fdf
+index e0dc17de..69299396 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.fdf
++++ b/Platforms/OnePlus/kebabPkg/kebab.fdf
+@@ -85,6 +85,7 @@ READ_LOCK_STATUS   = TRUE
+ 
+   # Gate XNU-001a-2: RAM FAT test volume
+   INF SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
++  INF SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.inf
+   FILE FREEFORM = 7B1C2A44-5E3D-4F6A-9C11-8E2D4F6A1B23 {
+     SECTION RAW = Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuTestFat12.img
+   }
+@@ -93,9 +94,6 @@ READ_LOCK_STATUS   = TRUE
+   FILE APPLICATION = 9B665204-A133-47A2-9396-9E2B370A4E25 {
+     SECTION PE32 = Platforms/OnePlus/kebabPkg/UniXNU/UniXNU.efi
+   }
+-  FILE DRIVER = 29B950CF-586D-49EA-9D71-F88645CCDAF6 {
+-    SECTION PE32 = Platforms/OnePlus/kebabPkg/UniXNU/UniXNUDxe.efi
+-  }
+ 
+   # RAM Manager
+   INF SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
+new file mode 100644
+index 00000000..1fa6a391
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.c
+@@ -0,0 +1,216 @@
++/** @file
++  XNU-002a-2: append a boot option for the UniXNU application.
++
++  Differences from the official UniXNUDxe:
++    - the option is appended at the END of BootOrder;
++    - an existing option for the same file is reused, never duplicated;
++    - nothing else in BootOrder/BootNext is touched.
++
++  Clean-up (from an OS or a UEFI shell):
++    remove the "UniXNU" entry from BootOrder, then delete Boot#### .
++**/
++#include <Uefi.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiRuntimeServicesTableLib.h>
++#include <Library/UefiLib.h>
++#include <Library/DebugLib.h>
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/DevicePathLib.h>
++#include <Library/PrintLib.h>
++#include <Protocol/FirmwareVolume2.h>
++#include <Guid/GlobalVariable.h>
++
++#define UNIXNU_APP_GUID \
++  { 0x9B665204, 0xA133, 0x47A2, { 0x93, 0x96, 0x9E, 0x2B, 0x37, 0x0A, 0x4E, 0x25 }}
++
++STATIC EFI_GUID  mAppGuid   = UNIXNU_APP_GUID;
++STATIC CHAR16    mDesc[]    = L"UniXNU";
++STATIC CHAR8     mOptional[] = "unixnu:firmware";
++
++STATIC
++EFI_STATUS
++FindAppFv (
++  OUT EFI_HANDLE *FvHandle
++  )
++{
++  EFI_STATUS                     St;
++  EFI_HANDLE                    *Handles = NULL;
++  UINTN                          Count = 0;
++  EFI_FIRMWARE_VOLUME2_PROTOCOL *Fv = NULL;
++  EFI_FV_FILETYPE                Type;
++  EFI_FV_FILE_ATTRIBUTES         Attr;
++  UINT32                         Auth;
++  UINTN                          Size = 0;
++
++  *FvHandle = NULL;
++  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiFirmwareVolume2ProtocolGuid, NULL, &Count, &Handles);
++  if (EFI_ERROR (St) || (Handles == NULL)) {
++    return St;
++  }
++  for (UINTN i = 0; i < Count; i++) {
++    Fv = NULL;
++    if (EFI_ERROR (gBS->HandleProtocol (Handles[i], &gEfiFirmwareVolume2ProtocolGuid, (VOID **)&Fv)) || (Fv == NULL)) {
++      continue;
++    }
++    if (!EFI_ERROR (Fv->ReadFile (Fv, &mAppGuid, NULL, &Size, &Type, &Attr, &Auth))) {
++      *FvHandle = Handles[i];
++      break;
++    }
++  }
++  FreePool (Handles);
++  return (*FvHandle != NULL) ? EFI_SUCCESS : EFI_NOT_FOUND;
++}
++
++STATIC
++EFI_DEVICE_PATH_PROTOCOL *
++BuildFilePath (IN EFI_HANDLE FvHandle)
++{
++  EFI_DEVICE_PATH_PROTOCOL *FvPath;
++  MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *Node;
++  EFI_DEVICE_PATH_PROTOCOL *Out;
++
++  FvPath = DevicePathFromHandle (FvHandle);
++  if (FvPath == NULL) {
++    return NULL;
++  }
++  Node = AllocateZeroPool (sizeof (MEDIA_FW_VOL_FILEPATH_DEVICE_PATH));
++  if (Node == NULL) {
++    return NULL;
++  }
++  Node->Header.Type    = MEDIA_DEVICE_PATH;
++  Node->Header.SubType = 0x06;   /* PIWG firmware file */
++  SetDevicePathNodeLength (&Node->Header, sizeof (MEDIA_FW_VOL_FILEPATH_DEVICE_PATH));
++  CopyGuid (&Node->FvFileName, &mAppGuid);
++
++  Out = AppendDevicePathNode (FvPath, (EFI_DEVICE_PATH_PROTOCOL *)Node);
++  FreePool (Node);
++  return Out;
++}
++
++STATIC
++EFI_STATUS
++AppendBootOrder (
++  IN UINT16 Number
++  )
++{
++  EFI_STATUS  St;
++  UINT16     *Order = NULL;
++  UINTN       Size = 0;
++  UINT16     *New;
++
++  St = gRT->GetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid, NULL, &Size, NULL);
++  if (St == EFI_BUFFER_TOO_SMALL) {
++    Order = AllocatePool (Size);
++    if (Order == NULL) {
++      return EFI_OUT_OF_RESOURCES;
++    }
++    St = gRT->GetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid, NULL, &Size, Order);
++    if (EFI_ERROR (St)) {
++      FreePool (Order);
++      return St;
++    }
++  } else if (St == EFI_NOT_FOUND) {
++    Size  = 0;
++    Order = NULL;
++  } else if (EFI_ERROR (St)) {
++    return St;
++  }
++
++  for (UINTN i = 0; i < Size / sizeof (UINT16); i++) {
++    if (Order[i] == Number) {
++      if (Order != NULL) {
++        FreePool (Order);
++      }
++      return EFI_SUCCESS;              // already present, nothing to do
++    }
++  }
++
++  New = AllocatePool (Size + sizeof (UINT16));
++  if (New == NULL) {
++    if (Order != NULL) FreePool (Order);
++    return EFI_OUT_OF_RESOURCES;
++  }
++  if ((Order != NULL) && (Size > 0)) {
++    CopyMem (New, Order, Size);
++  }
++  New[Size / sizeof (UINT16)] = Number;
++  St = gRT->SetVariable (EFI_BOOT_ORDER_VARIABLE_NAME, &gEfiGlobalVariableGuid,
++                         EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
++                         Size + sizeof (UINT16), New);
++  FreePool (New);
++  if (Order != NULL) FreePool (Order);
++  return St;
++}
++
++EFI_STATUS
++EFIAPI
++XnuBootEntryDxeEntryPoint (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_STATUS                     St;
++  EFI_HANDLE                     FvHandle = NULL;
++  EFI_DEVICE_PATH_PROTOCOL      *Dp;
++  UINTN                          DpSize;
++  UINT8                         *Option;
++  UINTN                          OptionSize;
++  UINT16                         Number;
++  CHAR16                         Name[9];
++  UINT32                         Attr = LOAD_OPTION_ACTIVE;
++
++  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] XnuBootEntryDxe entry (append-only)\n"));
++
++  St = FindAppFv (&FvHandle);
++  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] AppFv          = %r\n", St));
++  if (EFI_ERROR (St)) {
++    return EFI_SUCCESS;
++  }
++
++  Dp = BuildFilePath (FvHandle);
++  if (Dp == NULL) {
++    DEBUG ((EFI_D_ERROR, "[XNU-BOOT] DevicePath     = NULL (abort)\n"));
++    return EFI_SUCCESS;
++  }
++  DpSize = GetDevicePathSize (Dp);
++
++  OptionSize = sizeof (UINT32) + sizeof (UINT16) + sizeof (mDesc) + DpSize + sizeof (mOptional);
++  Option     = AllocateZeroPool (OptionSize);
++  if (Option == NULL) {
++    FreePool (Dp);
++    return EFI_SUCCESS;
++  }
++  CopyMem (Option, &Attr, sizeof (UINT32));
++  *(UINT16 *)(Option + sizeof (UINT32)) = (UINT16)DpSize;
++  CopyMem (Option + sizeof (UINT32) + sizeof (UINT16), mDesc, sizeof (mDesc));
++  CopyMem (Option + sizeof (UINT32) + sizeof (UINT16) + sizeof (mDesc), Dp, DpSize);
++  CopyMem (Option + sizeof (UINT32) + sizeof (UINT16) + sizeof (mDesc) + DpSize, mOptional, sizeof (mOptional));
++
++  for (Number = 0x9800; Number < 0x9900; Number++) {
++    UnicodeSPrint (Name, sizeof (Name), L"Boot%04x", Number);
++    St = gRT->GetVariable (Name, &gEfiGlobalVariableGuid, NULL, NULL, NULL);
++    if (St == EFI_NOT_FOUND) {
++      break;
++    }
++  }
++  if (Number >= 0x9900) {
++    FreePool (Option);
++    FreePool (Dp);
++    return EFI_SUCCESS;
++  }
++
++  St = gRT->SetVariable (Name, &gEfiGlobalVariableGuid,
++                         EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
++                         OptionSize, Option);
++  DEBUG ((EFI_D_ERROR, "[XNU-BOOT] Create %S      = %r\n", Name, St));
++  if (!EFI_ERROR (St)) {
++    St = AppendBootOrder (Number);
++    DEBUG ((EFI_D_ERROR, "[XNU-BOOT] AppendBootOrder = %r (appended, default untouched)\n", St));
++  }
++
++  FreePool (Option);
++  FreePool (Dp);
++  return EFI_SUCCESS;
++}
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.inf b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.inf
+new file mode 100644
+index 00000000..b54a17f2
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuBootEntryDxe/XnuBootEntryDxe.inf
+@@ -0,0 +1,42 @@
++## @file
++#  XNU-002a-2: register UniXNU as an ADDITIONAL boot option.
++#
++#  Unlike the official UniXNUDxe (which moves its option to the FRONT of
++#  BootOrder), this registrar appends the option at the END and never
++#  changes the existing default. The Project Silicium menu stays first.
++##
++[Defines]
++  INF_VERSION    = 0x00010005
++  BASE_NAME      = XnuBootEntryDxe
++  FILE_GUID      = C4E1B7A2-9D53-4F08-B6C1-7E2A5D904F31
++  MODULE_TYPE    = DXE_DRIVER
++  VERSION_STRING = 1.0
++  ENTRY_POINT    = XnuBootEntryDxeEntryPoint
++
++[Sources]
++  XnuBootEntryDxe.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++
++[LibraryClasses]
++  UefiDriverEntryPoint
++  UefiBootServicesTableLib
++  UefiRuntimeServicesTableLib
++  UefiLib
++  DebugLib
++  BaseLib
++  BaseMemoryLib
++  MemoryAllocationLib
++  DevicePathLib
++  PrintLib
++
++[Protocols]
++  gEfiFirmwareVolume2ProtocolGuid
++
++[Guids]
++  gEfiGlobalVariableGuid
++
++[Depex]
++  TRUE

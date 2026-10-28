@@ -1,0 +1,425 @@
+From e2132d71a10d09c8f19baad8059740c68742cc6c Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Wed, 21 Oct 2026 21:22:35 +0800
+Subject: [PATCH 15/38] kebab: XNU-001a-2 RAM FAT test volume (read-only
+ BlockIo producer)
+
+Adds XnuRamDiskDxe: reads the embedded FAT12 image from the firmware
+volume by GUID (GetSectionFromAnyFv) and exposes it as a read-only
+EFI_BLOCK_IO_PROTOCOL device so the existing DiskIo/Partition/Fat stack
+can present it as SimpleFileSystem.
+
+Design notes:
+- Self-contained: no HII, no ASL. (EDK2 RamDiskDxe was evaluated first but
+  cannot be built here: it needs iasl for RamDisk.asl and FileExplorerLib,
+  neither available in this environment.)
+- WriteBlocks returns EFI_WRITE_PROTECTED; the backing buffer is never
+  modified and stays allocated for the RAM disk lifetime.
+- Depex TRUE, placed in [FV.FvMain] (not APRIORI).
+- ReadyToBoot only *observes*: scoped ConnectController on our own handle,
+  then OpenVolume/Open/Read of XNU-TEST.TXT and content comparison.
+
+Test volume: 512 KiB FAT12, file XNU-TEST.TXT (112 bytes),
+image sha256 f53571afc7712bf93b811d50260958308c7844beb25dd40e0031139151614b62.
+---
+ Platforms/OnePlus/kebabPkg/kebab.dsc          |   2 +
+ Platforms/OnePlus/kebabPkg/kebab.fdf          |   6 +
+ .../Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c     | 177 ++++++++++++++++++
+ .../Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf   |  45 +++++
+ .../Drivers/XnuRamDiskDxe/XnuTestFat12.img    | Bin 0 -> 524288 bytes
+ .../Drivers/XnuRamDiskDxe/mkfat12.py          |  61 ++++++
+ 6 files changed, 291 insertions(+)
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuTestFat12.img
+ create mode 100644 Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12.py
+
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.dsc b/Platforms/OnePlus/kebabPkg/kebab.dsc
+index 68a6bfa8..04a2c74a 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.dsc
++++ b/Platforms/OnePlus/kebabPkg/kebab.dsc
+@@ -84,6 +84,8 @@
+   ConfigurationMapLib|kebabPkg/Library/ConfigurationMapLib/ConfigurationMapLib.inf
+ 
+ [Components]
++  # Gate XNU-001a-2: RAM FAT test volume (self-contained BlockIo producer)
++  SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
+   #
+   # ACPI Tables
+   #
+diff --git a/Platforms/OnePlus/kebabPkg/kebab.fdf b/Platforms/OnePlus/kebabPkg/kebab.fdf
+index 171876d1..6e7a732e 100644
+--- a/Platforms/OnePlus/kebabPkg/kebab.fdf
++++ b/Platforms/OnePlus/kebabPkg/kebab.fdf
+@@ -83,6 +83,12 @@ READ_LOCK_STATUS   = TRUE
+   !include Include/DXE.inc
+   !include Include/RAW.inc
+ 
++  # Gate XNU-001a-2: RAM FAT test volume
++  INF SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
++  FILE FREEFORM = 7B1C2A44-5E3D-4F6A-9C11-8E2D4F6A1B23 {
++    SECTION RAW = Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuTestFat12.img
++  }
++
+   # RAM Manager
+   INF SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+ 
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+new file mode 100644
+index 00000000..82f690f4
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.c
+@@ -0,0 +1,177 @@
++/** @file
++  XNU-001a-2: minimal read-only BlockIo producer over an embedded FAT12
++  image, plus a ReadyToBoot verification of SimpleFileSystem + file read.
++  No HII, no ASL, no timers, no protocol notify, no UFS access.
++**/
++#include <Uefi.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiLib.h>
++#include <Library/DebugLib.h>
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/DevicePathLib.h>
++#include <Library/DxeServicesLib.h>
++#include <Protocol/BlockIo.h>
++#include <Protocol/SimpleFileSystem.h>
++#include <Guid/FileInfo.h>
++#include <Guid/EventGroup.h>
++
++#define XNU_FAT_GUID \
++  { 0x7B1C2A44, 0x5E3D, 0x4F6A, { 0x9C, 0x11, 0x8E, 0x2D, 0x4F, 0x6A, 0x1B, 0x23 }}
++#define XNU_BLOCK_SIZE  512u
++
++STATIC EFI_GUID  mXnuFatGuid = XNU_FAT_GUID;
++STATIC VOID     *mFatImage   = NULL;
++STATIC UINTN     mFatSize    = 0;
++STATIC EFI_BLOCK_IO_MEDIA  mMedia;
++STATIC EFI_BLOCK_IO_PROTOCOL mBlockIo;
++STATIC EFI_HANDLE  mHandle   = NULL;
++STATIC EFI_EVENT   mReadyToBoot = NULL;
++
++STATIC CONST CHAR8 mExpected[] =
++  "XNU-000 RAM FAT probe file.\n"
++  "Generated for the OnePlus 8T kebab UEFI bring-up.\n"
++  "This file is read-only test data.\n";
++#define EXPECTED_LEN  (sizeof (mExpected) - 1)
++
++STATIC UINT32 Fnv1a (IN CONST UINT8 *B, IN UINTN N)
++{
++  UINT32 h = 2166136261u;
++  for (UINTN i = 0; i < N; i++) { h ^= B[i]; h *= 16777619u; }
++  return h;
++}
++
++STATIC EFI_STATUS EFIAPI BlkReset (IN EFI_BLOCK_IO_PROTOCOL *T, IN BOOLEAN V)
++{ return EFI_SUCCESS; }
++
++STATIC EFI_STATUS EFIAPI BlkRead (
++  IN EFI_BLOCK_IO_PROTOCOL *T, IN UINT32 MediaId, IN EFI_LBA Lba,
++  IN UINTN BufferSize, OUT VOID *Buffer)
++{
++  UINTN Off;
++  if (Buffer == NULL || BufferSize == 0) return EFI_INVALID_PARAMETER;
++  if (BufferSize % XNU_BLOCK_SIZE != 0) return EFI_BAD_BUFFER_SIZE;
++  Off = (UINTN)MultU64x32 (Lba, XNU_BLOCK_SIZE);
++  if (Off + BufferSize > mFatSize || Off + BufferSize < Off) return EFI_INVALID_PARAMETER;
++  CopyMem (Buffer, (UINT8 *)mFatImage + Off, BufferSize);
++  return EFI_SUCCESS;
++}
++
++STATIC EFI_STATUS EFIAPI BlkWrite (
++  IN EFI_BLOCK_IO_PROTOCOL *T, IN UINT32 MediaId, IN EFI_LBA Lba,
++  IN UINTN BufferSize, IN VOID *Buffer)
++{ return EFI_WRITE_PROTECTED; }
++
++STATIC EFI_STATUS EFIAPI BlkFlush (IN EFI_BLOCK_IO_PROTOCOL *T)
++{ return EFI_SUCCESS; }
++
++STATIC EFI_STATUS ProbeVolume (IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs)
++{
++  EFI_STATUS St;
++  EFI_FILE_PROTOCOL *Root = NULL, *File = NULL;
++  UINT8 Buf[EXPECTED_LEN + 64];
++  UINTN ReadSize = sizeof (Buf);
++
++  St = Sfs->OpenVolume (Sfs, &Root);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] OpenVolume      = %r\n", St));
++  if (EFI_ERROR (St)) return St;
++
++  St = Root->Open (Root, &File, L"\\XNU-TEST.TXT", EFI_FILE_MODE_READ, 0);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] FileOpen        = %r\n", St));
++  if (EFI_ERROR (St)) { Root->Close (Root); return St; }
++
++  ZeroMem (Buf, sizeof (Buf));
++  St = File->Read (File, &ReadSize, Buf);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] FileRead        = %r (%d bytes)\n", St, (UINT32)ReadSize));
++
++  if (!EFI_ERROR (St) && ReadSize == EXPECTED_LEN &&
++      CompareMem (Buf, mExpected, EXPECTED_LEN) == 0) {
++    DEBUG ((EFI_D_ERROR, "[XNU-RAM] HashMatch       = 1 (fnv1a=0x%08x)\n", Fnv1a (Buf, ReadSize)));
++  } else {
++    DEBUG ((EFI_D_ERROR, "[XNU-RAM] HashMatch       = 0 (fnv1a=0x%08x)\n", Fnv1a (Buf, ReadSize)));
++  }
++  File->Close (File);
++  Root->Close (Root);
++  return EFI_SUCCESS;
++}
++
++STATIC VOID EFIAPI XnuReadyToBoot (IN EFI_EVENT E, IN VOID *C)
++{
++  EFI_STATUS St;
++  EFI_HANDLE *Handles = NULL;
++  UINTN Count = 0;
++  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs = NULL;
++  BOOLEAN Found = FALSE;
++
++  if (mHandle != NULL) {
++    St = gBS->ConnectController (mHandle, NULL, NULL, TRUE);
++    DEBUG ((EFI_D_ERROR, "[XNU-RAM] ConnectStatus   = %r (scoped to RAM disk)\n", St));
++  }
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL, &Count, &Handles);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] SimpleFsReady   = %d handle(s), status %r\n", (UINT32)Count, St));
++  if (!EFI_ERROR (St) && Handles != NULL) {
++    for (UINTN i = 0; i < Count && !Found; i++) {
++      Sfs = NULL;
++      if (EFI_ERROR (gBS->HandleProtocol (Handles[i], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Sfs)))
++        continue;
++      DEBUG ((EFI_D_ERROR, "[XNU-RAM] Trying Sfs[%d] = %p\n", (UINT32)i, Handles[i]));
++      if (!EFI_ERROR (ProbeVolume (Sfs))) Found = TRUE;
++    }
++    FreePool (Handles);
++  }
++  if (!Found) DEBUG ((EFI_D_ERROR, "[XNU-RAM] FileRead        = NO_VOLUME\n"));
++}
++
++EFI_STATUS EFIAPI XnuRamDiskDxeEntryPoint (IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
++{
++  EFI_STATUS St;
++  EFI_DEVICE_PATH_PROTOCOL *Dp;
++  VENDOR_DEVICE_PATH *Vn;
++
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] XnuRamDiskDxe entry (BlockIo mode)\n"));
++
++  St = GetSectionFromAnyFv (&mXnuFatGuid, EFI_SECTION_RAW, 0, &mFatImage, &mFatSize);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageFound      = %r\n", St));
++  if (EFI_ERROR (St) || mFatImage == NULL) { DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageSize       = 0 (abort)\n")); return EFI_SUCCESS; }
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageSize       = %d bytes @ %p\n", (UINT32)mFatSize, mFatImage));
++
++  if (mFatSize < XNU_BLOCK_SIZE) { DEBUG ((EFI_D_ERROR, "[XNU-RAM] ImageSize       = too small (abort)\n")); return EFI_SUCCESS; }
++
++  ZeroMem (&mMedia, sizeof (mMedia));
++  mMedia.MediaId          = 0x584E5531;   // 'XNU1'
++  mMedia.RemovableMedia   = FALSE;
++  mMedia.MediaPresent     = TRUE;
++  mMedia.LogicalPartition = FALSE;
++  mMedia.ReadOnly         = TRUE;
++  mMedia.BlockSize        = XNU_BLOCK_SIZE;
++  mMedia.IoAlign          = 1;
++  mMedia.LastBlock        = (EFI_LBA)(mFatSize / XNU_BLOCK_SIZE) - 1;
++
++  mBlockIo.Revision = EFI_BLOCK_IO_PROTOCOL_REVISION;
++  mBlockIo.Media    = &mMedia;
++  mBlockIo.Reset    = BlkReset;
++  mBlockIo.ReadBlocks  = BlkRead;
++  mBlockIo.WriteBlocks = BlkWrite;
++  mBlockIo.FlushBlocks = BlkFlush;
++
++  Vn = (VENDOR_DEVICE_PATH *)CreateDeviceNode (HARDWARE_DEVICE_PATH, HW_VENDOR_DP, sizeof (VENDOR_DEVICE_PATH));
++  if (Vn == NULL) return EFI_SUCCESS;
++  CopyGuid (&Vn->Guid, &mXnuFatGuid);
++  Dp = (EFI_DEVICE_PATH_PROTOCOL *)Vn;
++
++  St = gBS->InstallMultipleProtocolInterfaces (
++         &mHandle,
++         &gEfiDevicePathProtocolGuid, Dp,
++         &gEfiBlockIoProtocolGuid,    &mBlockIo,
++         NULL);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] RegisterStatus  = %r (BlockIo installed)\n", St));
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] DevicePath      = %p handle=%p\n", Dp, mHandle));
++  if (EFI_ERROR (St)) return EFI_SUCCESS;
++
++  St = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, XnuReadyToBoot, NULL,
++                           &gEfiEventReadyToBootGuid, &mReadyToBoot);
++  DEBUG ((EFI_D_ERROR, "[XNU-RAM] ReadyToBootEvt  = %r\n", St));
++  return EFI_SUCCESS;
++}
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
+new file mode 100644
+index 00000000..d659b8a9
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuRamDiskDxe.inf
+@@ -0,0 +1,45 @@
++## @file
++#  XNU-001a-2: expose an in-firmware FAT image as an EFI_BLOCK_IO_PROTOCOL
++#  device so the EDK2 DiskIo/Partition/Fat stack can present it as
++#  SimpleFileSystem.
++#
++#  Self-contained (no HII, no ASL). Read-only: WriteBlocks returns
++#  EFI_WRITE_PROTECTED and the backing buffer is never modified.
++##
++[Defines]
++  INF_VERSION    = 0x00010005
++  BASE_NAME      = XnuRamDiskDxe
++  FILE_GUID      = 5E7A1C93-2D44-4B18-8F06-3A9C51D7E2B4
++  MODULE_TYPE    = DXE_DRIVER
++  VERSION_STRING = 1.0
++  ENTRY_POINT    = XnuRamDiskDxeEntryPoint
++
++[Sources]
++  XnuRamDiskDxe.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++
++[LibraryClasses]
++  UefiDriverEntryPoint
++  UefiBootServicesTableLib
++  UefiLib
++  DebugLib
++  BaseLib
++  BaseMemoryLib
++  MemoryAllocationLib
++  DevicePathLib
++  DxeServicesLib
++
++[Protocols]
++  gEfiBlockIoProtocolGuid
++  gEfiDevicePathProtocolGuid
++  gEfiSimpleFileSystemProtocolGuid
++
++[Guids]
++  gEfiFileInfoGuid
++  gEfiEventReadyToBootGuid
++
++[Depex]
++  TRUE
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuTestFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuTestFat12.img
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9d9aed5a1b9b42d36c0cfd400e9b8a49524da57
+GIT binary patch
+literal 524288
+zcmeI#!Ae^}6adgMy2_^F7u>Cjgj5t<xM;vAT_h>Zi@1FuqlShgygZ@Z^%MFX{k8sp
+zyEGPDxONqL?&dPXT)6iP49uU4U;WYLaCFx0q{iM}Y8<9?@U)*IeM&F!GaY}wIXxN-
+zW6<sQVjEZ8;^WCSznqYFQ(*l2X|vgU*v;m3O@IIa0&fuT{=WfFDFFfmc39wcFm4sS
+zQBm9$@p_C#TD{(|dWQnf_uuJs;%m46{Hu>uwVdR*o6U2(d7T%zD(gIryJZ#iLyqAh
+zf0;k7<GhG(c~VYd+`IZ5lWMlOZ#}Ns&EjFU{#P8^T;+1wS}x{4qR#6&re$5Wo9~d&
+zNCXHFAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+
+z009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBly
+zK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF
+z5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk
+z1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs
+z0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZ
+zfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&U
+zAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C7
+z2oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N
+z0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+
+z009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBly
+zK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF
+z5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk
+z1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs
+z0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZ
+zfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&U
+zAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C7
+z2oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N
+z0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+
+z009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBly
+zK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF
+z5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk
+z1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs
+z0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZ
+zfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&U
+zAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C7
+z2oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N
+z0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+
+z009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBly
+zK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF
+z5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk
+z1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs
+z0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZ
+zfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&U
+zAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C7
+z2oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N
+z0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+
+z009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBly
+zK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF
+z5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk
+z1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs
+z0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZ
+zfB*pk1PBlyK!5-N0t5&UAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK!5-N0t5&U
+lAV7cs0RjXF5FkK+009C72oNAZfB*pk1PBlyK;XX@_zPtCJa+&9
+
+literal 0
+HcmV?d00001
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12.py b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12.py
+new file mode 100644
+index 00000000..36d37c4b
+--- /dev/null
++++ b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/mkfat12.py
+@@ -0,0 +1,61 @@
++import struct, sys, os
++SIZE = 512*1024          # 512 KiB
++SEC  = 512
++TOT  = SIZE // SEC
++RESV = 1
++NFATS= 2
++ROOT = 512 // 32          # 512 root entries
++SPC  = 1                  # 1 sector per cluster
++FATSEC = 3                # FAT12: 3 sectors = 1024 entries
++data_start = RESV + NFATS*FATSEC + ROOT//(SEC//32)
++clusters = TOT - data_start
++assert clusters < 4085, clusters
++img = bytearray(SIZE)
++bs = bytearray(512)
++bs[0:3] = b'\xEB\x3C\x90'
++bs[3:11] = b'MSDOS5.0'
++struct.pack_into('<H', bs, 11, SEC)
++bs[13] = SPC
++struct.pack_into('<H', bs, 14, RESV)
++bs[16] = NFATS
++struct.pack_into('<H', bs, 17, ROOT)
++struct.pack_into('<H', bs, 19, TOT if TOT < 65536 else 0)
++bs[21] = 0xF8
++struct.pack_into('<H', bs, 22, FATSEC)
++struct.pack_into('<H', bs, 24, 32)      # sectors/track
++struct.pack_into('<H', bs, 26, 64)      # heads
++struct.pack_into('<H', bs, 28, 0)       # hidden
++struct.pack_into('<I', bs, 32, 0)       # total32 (unused)
++bs[36] = 0x80
++bs[38] = 0x29
++struct.pack_into('<I', bs, 39, 0x12345678)
++bs[43:54] = b'NO NAME    '
++bs[54:62] = b'FAT12   '
++bs[510] = 0x55; bs[511] = 0xAA
++img[0:512] = bs
++# FAT12 entries: 0=FF8, 1=FFF
++fat = bytearray(FATSEC*SEC)
++fat[0:3] = bytes([0xF8,0xFF,0xFF])
++fat[3] = 0xFF           # cluster 2 -> 0xFFF (end of chain)
++fat[4] = 0x0F
++# copy FATs
++for i in range(NFATS):
++    off = (RESV + i*FATSEC)*SEC
++    img[off:off+len(fat)] = fat
++# root dir
++root_off = (RESV + NFATS*FATSEC)*SEC
++data = open('/tmp/xnu/XNU-TEST.TXT','rb').read()
++assert len(data) <= SEC*SPC
++cl = 2
++e = bytearray(32)
++name, ext = b'XNU-TEST', b'TXT'
++e[0:8] = name.ljust(8)
++e[8:11] = ext.ljust(3)
++e[11] = 0x20
++struct.pack_into('<H', e, 26, cl)
++struct.pack_into('<I', e, 28, len(data))
++img[root_off:root_off+32] = e
++d_off = (data_start + (cl-2)*SPC)*SEC
++img[d_off:d_off+len(data)] = data
++open('/tmp/xnu/xnu-test-fat12.img','wb').write(img)
++print(f'  built {SIZE} bytes, data_start_lba={data_start}, clusters={clusters}, file_lba={d_off//SEC}')

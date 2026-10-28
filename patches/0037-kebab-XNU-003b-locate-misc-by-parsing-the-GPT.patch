@@ -1,0 +1,478 @@
+From a48fbbd4c670adce92a1dd7c22239d29faac7302 Mon Sep 17 00:00:00 2001
+From: bringup <bringup@local>
+Date: Thu, 22 Oct 2026 00:56:24 +0800
+Subject: [PATCH 37/38] kebab: XNU-003b locate misc by parsing the GPT
+
+The first version relied on gEfiPartitionInfoProtocolGuid and reported
+'misc = Not Found' on the device; DEBUG() output did not reach ConOut
+either, so nothing was visible.
+
+BootToBl.efi now:
+  - prints every BlockIo handle and every GPT partition with Print();
+  - picks the whole-disk BlockIo (LogicalPartition == FALSE);
+  - parses the GPT header at LBA 1 and the entry array itself;
+  - matches the partition name 'misc' case-insensitively;
+  - reads the first block of misc, overlays the BCB, writes it back,
+    reads it back to prove it stuck, then cold-resets into fastboot.
+---
+ .../Application/BootToBl/BootToBl.c           | 266 ++++++++++++------
+ .../Application/BootToBl/BootToBl.inf         |   1 -
+ .../Drivers/XnuRamDiskDxe/XnuConfigFat12.img  | Bin 524288 -> 524288 bytes
+ 3 files changed, 187 insertions(+), 80 deletions(-)
+
+diff --git a/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c
+index 3adfa076..31cd5e32 100644
+--- a/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c
++++ b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.c
+@@ -4,9 +4,11 @@
+   The platform exposes no reset-reason setter and no bootloader-mode service,
+   so this follows the Android convention: write a bootloader control block
+   with the "bootonce-bootloader" command into the misc partition and reset.
+-  ABL consumes the command on the next boot and stays in fastboot.
+ 
+-  Only the "command" field is written; the rest of the block is cleared.
++  misc is located by parsing the GPT directly from the whole-disk BlockIo,
++  because gEfiPartitionInfoProtocolGuid may not be installed on this
++  platform.  Everything is reported with Print(), not DEBUG() - the
++  application's DebugLib does not reach ConOut here.
+ 
+   Copyright (c) 2026. SPDX-License-Identifier: BSD-2-Clause-Patent
+ **/
+@@ -14,7 +16,6 @@
+ #include <Uefi.h>
+ #include <Library/BaseLib.h>
+ #include <Library/BaseMemoryLib.h>
+-#include <Library/DebugLib.h>
+ #include <Library/DevicePathLib.h>
+ #include <Library/MemoryAllocationLib.h>
+ #include <Library/PrintLib.h>
+@@ -22,9 +23,9 @@
+ #include <Library/UefiLib.h>
+ #include <Library/UefiRuntimeServicesTableLib.h>
+ #include <Protocol/BlockIo.h>
+-#include <Protocol/PartitionInfo.h>
+ 
+-#define BCB_MAGIC_CMD  "bootonce-bootloader"
++#define BCB_CMD      "bootonce-bootloader"
++#define BCB_SIZE     2048
+ 
+ #pragma pack (1)
+ typedef struct {
+@@ -34,57 +35,53 @@ typedef struct {
+   CHAR8    Stage[32];
+   CHAR8    Reserved[1184];
+ } BOOTLOADER_MESSAGE;
++
++typedef struct {
++  UINT8     Signature[8];
++  UINT32    Revision;
++  UINT32    HeaderSize;
++  UINT32    HeaderCrc;
++  UINT32    Reserved;
++  UINT64    CurrentLba;
++  UINT64    BackupLba;
++  UINT64    FirstUsable;
++  UINT64    LastUsable;
++  UINT8     DiskGuid[16];
++  UINT64    EntryLba;
++  UINT32    EntryCount;
++  UINT32    EntrySize;
++  UINT32    EntriesCrc;
++} GPT_HEADER;
++
++typedef struct {
++  UINT8     TypeGuid[16];
++  UINT8     UniqueGuid[16];
++  UINT64    FirstLba;
++  UINT64    LastLba;
++  UINT64    Attributes;
++  CHAR16    Name[36];
++} GPT_ENTRY;
+ #pragma pack ()
+ 
+ STATIC
+-EFI_STATUS
+-FindMiscPartition (
+-  OUT EFI_HANDLE             *Handle,
+-  OUT EFI_BLOCK_IO_PROTOCOL **BlockIo
++BOOLEAN
++NameIsMisc (
++  IN CONST CHAR16  *Name
+   )
+ {
+-  EFI_STATUS                    Status;
+-  EFI_HANDLE                   *Handles = NULL;
+-  UINTN                         Count = 0;
+-  UINTN                         Index;
+-  EFI_PARTITION_INFO_PROTOCOL  *Info;
+-
+-  *Handle  = NULL;
+-  *BlockIo = NULL;
+-
+-  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiPartitionInfoProtocolGuid, NULL, &Count, &Handles);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
++  STATIC CONST CHAR16  Target[] = L"misc";
++  UINTN                i;
+ 
+-  for (Index = 0; Index < Count; Index++) {
+-    Info = NULL;
+-    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiPartitionInfoProtocolGuid, (VOID **)&Info)) ||
+-        (Info == NULL))
+-    {
+-      continue;
+-    }
+-
+-    if (Info->Type == PARTITION_TYPE_GPT) {
+-      DEBUG ((DEBUG_ERROR, "[XNU-BL] partition %d: GPT \"%s\"\n", (UINT32)Index, Info->Info.Gpt.PartitionName));
+-    }
+-
+-    if ((Info->Type != PARTITION_TYPE_GPT) ||
+-        (CompareMem (Info->Info.Gpt.PartitionName, L"misc", sizeof (L"misc")) != 0))
+-    {
+-      continue;
++  for (i = 0; i < 4; i++) {
++    CHAR16 c = Name[i];
++    if ((c >= L'A') && (c <= L'Z')) {
++      c = (CHAR16)(c - L'A' + L'a');
+     }
+-
+-    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)BlockIo))) {
+-      continue;
++    if (c != Target[i]) {
++      return FALSE;
+     }
+-
+-    *Handle = Handles[Index];
+-    break;
+   }
+-
+-  FreePool (Handles);
+-  return (*Handle != NULL) ? EFI_SUCCESS : EFI_NOT_FOUND;
++  return TRUE;
+ }
+ 
+ EFI_STATUS
+@@ -95,60 +92,171 @@ BootToBlEntry (
+   )
+ {
+   EFI_STATUS             Status;
+-  EFI_HANDLE             Handle = NULL;
+-  EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
+-  BOOTLOADER_MESSAGE     Bcb;
++  EFI_HANDLE            *Handles = NULL;
++  UINTN                  Count = 0;
++  UINTN                  Index;
++  EFI_BLOCK_IO_PROTOCOL *Disk = NULL;
++  EFI_BLOCK_IO_PROTOCOL *Blk;
++  UINT32                 BlockSize = 0;
++  UINT8                 *Buf = NULL;
++  GPT_HEADER            *Hdr;
++  GPT_ENTRY             *Entries;
++  UINTN                  EntriesBytes;
++  UINT64                 MiscLba = 0;
++  UINTN                  Shown = 0;
++  BOOTLOADER_MESSAGE    *Bcb;
+ 
+   if (gST->ConOut != NULL) {
+     gST->ConOut->ClearScreen (gST->ConOut);
+   }
+ 
+-  Print (L"XNU-BL: looking for the misc partition\n");
+-  Status = FindMiscPartition (&Handle, &BlockIo);
+-  Print (L"XNU-BL: misc = %r\n", Status);
++  Print (L"XNU-BL: scanning BlockIo handles\n");
++  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
+   if (EFI_ERROR (Status)) {
+-    Print (L"XNU-BL: no misc partition, press any key\n");
++    Print (L"XNU-BL: no BlockIo at all: %r\n", Status);
++    gBS->Stall (10 * 1000 * 1000);
++    return Status;
++  }
++
++  Print (L"XNU-BL: %d BlockIo handle(s)\n", (UINT32)Count);
++  for (Index = 0; Index < Count; Index++) {
++    Blk = NULL;
++    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&Blk)) ||
++        (Blk == NULL) || (Blk->Media == NULL))
++    {
++      continue;
++    }
++
++    if (Shown < 8) {
++      Print (L"XNU-BL:   [%d] logical=%d blockSize=%d last=%ld\n",
++             (UINT32)Index, Blk->Media->LogicalPartition, (UINT32)Blk->Media->BlockSize,
++             (UINT64)Blk->Media->LastBlock);
++      Shown++;
++    }
++
++    if (!Blk->Media->LogicalPartition) {
++      Disk      = Blk;
++      BlockSize = Blk->Media->BlockSize;
++    }
++  }
++
++  if ((Disk == NULL) || (BlockSize < 512) || (BlockSize > 4096)) {
++    Print (L"XNU-BL: no whole-disk BlockIo\n");
++    FreePool (Handles);
+     gBS->Stall (10 * 1000 * 1000);
+     return EFI_NOT_FOUND;
+   }
+ 
+-  if (BlockIo->Media->ReadOnly ||
+-      (BlockIo->Media->BlockSize == 0) ||
+-      (BlockIo->Media->BlockSize > 4096))
++  Print (L"XNU-BL: whole disk blockSize=%d\n", BlockSize);
++
++  Buf = AllocatePool (BlockSize);
++  if (Buf == NULL) {
++    FreePool (Handles);
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  Status = Disk->ReadBlocks (Disk, Disk->Media->MediaId, 1, BlockSize, Buf);
++  if (EFI_ERROR (Status)) {
++    Print (L"XNU-BL: read GPT header failed: %r\n", Status);
++    goto Out;
++  }
++
++  Hdr = (GPT_HEADER *)Buf;
++  if (CompareMem (Hdr->Signature, "EFI PART", 8) != 0) {
++    Print (L"XNU-BL: no GPT signature at LBA1\n");
++    Status = EFI_NOT_FOUND;
++    goto Out;
++  }
++
++  Print (L"XNU-BL: GPT entries LBA=%ld count=%d size=%d\n",
++         (UINT64)Hdr->EntryLba, Hdr->EntryCount, Hdr->EntrySize);
++
++  EntriesBytes = (UINTN)Hdr->EntryCount * Hdr->EntrySize;
++  Entries      = AllocatePool (EntriesBytes);
++  if (Entries == NULL) {
++    Status = EFI_OUT_OF_RESOURCES;
++    goto Out;
++  }
++
+   {
+-    Print (L"XNU-BL: misc unusable (ro=%d blockSize=%d)\n",
+-           BlockIo->Media->ReadOnly, (UINT32)BlockIo->Media->BlockSize);
+-    gBS->Stall (10 * 1000 * 1000);
+-    return EFI_DEVICE_ERROR;
++    UINTN Sectors = (EntriesBytes + BlockSize - 1) / BlockSize;
++    Status = Disk->ReadBlocks (Disk, Disk->Media->MediaId, Hdr->EntryLba, Sectors * BlockSize, Entries);
++    if (EFI_ERROR (Status)) {
++      Print (L"XNU-BL: read GPT entries failed: %r\n", Status);
++      FreePool (Entries);
++      goto Out;
++    }
+   }
+ 
+-  ZeroMem (&Bcb, sizeof (Bcb));
+-  CopyMem (Bcb.Command, BCB_MAGIC_CMD, sizeof (BCB_MAGIC_CMD));
++  for (Index = 0; Index < Hdr->EntryCount; Index++) {
++    GPT_ENTRY *E = (GPT_ENTRY *)((UINT8 *)Entries + Index * Hdr->EntrySize);
++    BOOLEAN    Empty;
+ 
+-  Print (L"XNU-BL: writing BCB \"%a\" (%d bytes)\n", BCB_MAGIC_CMD, (UINT32)sizeof (Bcb));
+-  Status = BlockIo->WriteBlocks (BlockIo, BlockIo->Media->MediaId, 0, sizeof (Bcb), &Bcb);
++    Empty = TRUE;
++    for (UINTN b = 0; b < 16; b++) {
++      if (E->TypeGuid[b] != 0) {
++        Empty = FALSE;
++        break;
++      }
++    }
++    if (Empty) {
++      continue;
++    }
++
++    if (Shown < 40) {
++      Print (L"XNU-BL:   part %d \"%s\" first=%ld\n", (UINT32)Index, E->Name, (UINT64)E->FirstLba);
++      Shown++;
++    }
++
++    if (NameIsMisc (E->Name)) {
++      MiscLba = E->FirstLba;
++      Print (L"XNU-BL: misc found at LBA %ld\n", (UINT64)MiscLba);
++      break;
++    }
++  }
++  FreePool (Entries);
++
++  if (MiscLba == 0) {
++    Print (L"XNU-BL: no partition named misc\n");
++    Status = EFI_NOT_FOUND;
++    goto Out;
++  }
++
++  Status = Disk->ReadBlocks (Disk, Disk->Media->MediaId, MiscLba, BlockSize, Buf);
++  if (EFI_ERROR (Status)) {
++    Print (L"XNU-BL: read misc failed: %r\n", Status);
++    goto Out;
++  }
++
++  Bcb = (BOOTLOADER_MESSAGE *)Buf;
++  ZeroMem (Bcb, BCB_SIZE);
++  CopyMem (Bcb->Command, BCB_CMD, sizeof (BCB_CMD));
++
++  Print (L"XNU-BL: writing BCB \"%a\"\n", BCB_CMD);
++  Status = Disk->WriteBlocks (Disk, Disk->Media->MediaId, MiscLba, BlockSize, Buf);
+   Print (L"XNU-BL: WriteBlocks = %r\n", Status);
+   if (EFI_ERROR (Status)) {
+-    gBS->Stall (10 * 1000 * 1000);
+-    return Status;
++    goto Out;
+   }
+ 
+-  //
+-  // Read it back so a failed flush is visible instead of silently rebooting
+-  // into UEFI again.
+-  //
+-  ZeroMem (&Bcb, sizeof (Bcb));
+-  Status = BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId, 0, sizeof (Bcb), &Bcb);
+-  Print (L"XNU-BL: readback = %r command=\"%a\"\n", Status, Bcb.Command);
+-  if (EFI_ERROR (Status) || (CompareMem (Bcb.Command, BCB_MAGIC_CMD, sizeof (BCB_MAGIC_CMD)) != 0)) {
++  ZeroMem (Buf, BlockSize);
++  Status = Disk->ReadBlocks (Disk, Disk->Media->MediaId, MiscLba, BlockSize, Buf);
++  Print (L"XNU-BL: readback = %r command=\"%a\"\n", Status, ((BOOTLOADER_MESSAGE *)Buf)->Command);
++  if (EFI_ERROR (Status) || (CompareMem (((BOOTLOADER_MESSAGE *)Buf)->Command, BCB_CMD, sizeof (BCB_CMD)) != 0)) {
+     Print (L"XNU-BL: BCB did not stick, aborting\n");
+-    gBS->Stall (10 * 1000 * 1000);
+-    return EFI_DEVICE_ERROR;
++    Status = EFI_DEVICE_ERROR;
++    goto Out;
+   }
+ 
+   Print (L"XNU-BL: resetting into fastboot\n");
+-  gBS->Stall (1000 * 1000);
++  gBS->Stall (1500 * 1000);
+   gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
+ 
+-  return EFI_SUCCESS;
++Out:
++  gBS->Stall (15 * 1000 * 1000);
++  if (Buf != NULL) {
++    FreePool (Buf);
++  }
++  FreePool (Handles);
++  return Status;
+ }
+diff --git a/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf
+index 277dbdf9..c8742de8 100644
+--- a/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf
++++ b/Silicon/Silicium/SiliciumPkg/Application/BootToBl/BootToBl.inf
+@@ -31,4 +31,3 @@
+ 
+ [Protocols]
+   gEfiBlockIoProtocolGuid
+-  gEfiPartitionInfoProtocolGuid
+diff --git a/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img b/Silicon/Silicium/SiliciumPkg/Drivers/XnuRamDiskDxe/XnuConfigFat12.img
+index b0e95e5e79c1bd3b1b9e3f7409f119065ee45aac..667b312cfdced2c97af1f9d061183fff0d1497e0 100644
+GIT binary patch
+delta 4143
+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
+XJ0jPPD77PgwIlwuBLT0C1Wx`h17llA
+
+delta 3339
+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
+bYzeo8g|@KR7M9w=hPJS=Eo^!{oHXs<?#7Fy
+
